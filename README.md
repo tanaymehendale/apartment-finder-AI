@@ -25,7 +25,7 @@ A "Manager" agent interfaces with the user to understand their specific needs. O
 ## Architecture
 
 
-(Note: Include your architecture diagram here)
+![Architecture Diagram](architecture_diagram.png "Architecture Diagram")
 
 1. **The Manager (Root Agent)**
 
@@ -38,11 +38,11 @@ A "Manager" agent interfaces with the user to understand their specific needs. O
 Once triggered, this team executes a linear assembly line:
 
  - 🕵️ **Analyst Agent (The Worker)**
-   - Tools: * fetch_apartments: Queries a local Pandas DataFrame (Mock Database) for listings.
-   - check_commutes: Connects to a local Node.js MCP Server to query the live Google Maps API for transit times.
+   - `fetch_apartments` tool : Queries a local Pandas DataFrame (Mock Database) for listings.
+   - `check_commutes` tool: Connects to a local Node.js MCP Server to query the live Google Maps API for transit times.
 
  - 🛡️ **Reviewer Agent (The Vetting Officer)**
-   - Tools: Google Search (ADK Built-in).
+   - Tools: `google_search` Google Search (ADK Built-in).
    - Behavior: dynamic searches for neighborhood safety reviews based on the specific addresses found.
 
  - 📝 **Summarizer Agent (The Closer)**
@@ -53,7 +53,7 @@ Once triggered, this team executes a linear assembly line:
 
  - Framework: Google Agent Development Kit (ADK).
  - LLM: Gemini 2.5 Flash (via Vertex AI / AI Studio).
- - Tooling Protocol: Model Context Protocol (MCP) for Google Maps integration.
+ - MCP: Google Maps MCP Server by @modelcontextprotocol Check it out [here](https://github.com/modelcontextprotocol/servers-archived/tree/main/src/google-maps).
  - Data Layer: Pandas (handling CSV inventory).
  - Grounding: Google Search (Native ADK integration).
 
@@ -73,7 +73,7 @@ Once triggered, this team executes a linear assembly line:
 
 1. Clone the repository:
 ```bash
-git clone [https://github.com/yourusername/apartment-finder-ai.git](https://github.com/yourusername/apartment-finder-ai.git)
+git clone https://github.com/yourusername/apartment-finder-ai.git
 cd apartment-finder-ai
 ```
 
@@ -121,11 +121,13 @@ Agent: "I found a great option for you! The Riverside Lofts are $2,100/month. Th
 apartment-finder-ai/
 ├── agents/
 │   └── apartment_finder/
-│       ├── agent.py         # Agent Definitions (Manager, Analyst, Reviewer)
-│       └── tools.py         # Python Tools & MCP Wrapper Logic
+│       ├── agent.py                              # Agent Definitions
+│       └── tools.py                              # Python Tools & MCP Wrapper Logic
 ├── data/
-│   └── apartments.csv       # Mock Inventory Database
-├── main.py                  # Entry point & Runner
-├── package.json             # Node dependencies (MCP)
-└── requirements.txt         # Python dependencies
+│   ├── apartments_cleaned.csv                    # Cleaned mock database
+│   └── apartments_for_rent_classified_100K.csv   # Raw dataset (from Kaggle)
+├── main.py                                       # Entry point & Runner
+├── package.json                                  # Node dependencies (MCP)
+├── preprocessing.py                              # Preprocessing Script for raw data
+└── requirements.txt                              # Python dependencies
 ```

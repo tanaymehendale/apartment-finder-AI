@@ -35,6 +35,7 @@ YOUR WORKFLOW:
    - Extract the 'latitude' and 'longitude' from the apartment data.
    - Format them into a list of strings: ["lat,lng", "lat,lng", ...].
    - Call 'check_commute' tool with this list and the user's 'landmark'.
+   - CRITICAL: You MUST append the "<city>, <state>" to the landmark to ensure accuracy.
 
 YOUR OUTPUT:
 - Compile a JSON-like summary containing:
