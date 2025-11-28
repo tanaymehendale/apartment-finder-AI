@@ -1,0 +1,6 @@
+google-genai
+google-adk
+pandas
+python-dotenv
+mcp
+kagglehub
