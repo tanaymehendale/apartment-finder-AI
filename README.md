@@ -50,7 +50,7 @@ Once triggered, this team executes a linear assembly line:
 
  - Framework: Google Agent Development Kit (ADK).
  - LLM: Gemini 2.5 Flash (via Vertex AI / AI Studio).
- - MCP: Google Maps MCP Server by @modelcontextprotocol Check it out [here](https://github.com/modelcontextprotocol/servers-archived/tree/main/src/google-maps).
+ - MCP: Google Maps MCP Server by [@modelcontextprotocol](https://github.com/modelcontextprotocol/). Click [here](https://github.com/modelcontextprotocol/servers-archived/tree/main/src/google-maps) to access.
  - Data Layer: Pandas (handling CSV inventory).
  - Grounding: Google Search (Native ADK integration).
 
@@ -82,7 +82,7 @@ pip install -r requirements.txt
 ```
 
 3. Install MCP Server:
-This project uses the official Google Maps MCP server.
+This project uses the Google Maps MCP server offered by [@modelcontextprotocol](https://github.com/modelcontextprotocol/)
 
 ```bash
 npm init -y

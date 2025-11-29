@@ -1,5 +1,5 @@
 import os
-from google.adk.agents import Agent, LlmAgent, SequentialAgent
+from google.adk.agents import LlmAgent, SequentialAgent
 from google.genai import types
 from google.adk.models.google_llm import Gemini
 from google.adk.tools import google_search
@@ -24,13 +24,13 @@ analyst = LlmAgent(
     model=model,
     description="Executes tools to find and analyze apartments.",
     instruction=instructions.ANALYST_PROMPT,
-    # It uses all only custom tools: Custom (Inventory), MCP (Commute)
+    # It uses only custom tools: Custom (Inventory), MCP (Commute)
     tools=[tools.fetch_apartments, tools.check_commutes], 
     output_key="analyst_dossier"
 )
 
 # --- 2. THE REVIEWER AGENT ---
-reviewer = Agent(
+reviewer = LlmAgent(
     name="reviewer",
     model=model,
     description="Checks neighborhood safety.",
@@ -62,5 +62,4 @@ root_agent = LlmAgent(
     model=model,
     instruction=instructions.MANAGER_PROMPT,
     sub_agents=[research_team]
-    # output_key="user_requirements"
 )
