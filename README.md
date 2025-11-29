@@ -1,7 +1,5 @@
 # 🏠 ApartmentFinder AI Agent
 
-> Google x Kaggle AI Agents Intensive Capstone Project
-
 ApartmentFinder is an intelligent multi-agent system designed to simplify the chaos of relocating. Instead of juggling tabs between Zillow, Google Maps, and Reddit, users have a single conversation with an AI that finds apartments, calculates real-time public transit commutes, vets neighborhood safety, and delivers a curated summary.
 
 ## The Problem
@@ -23,7 +21,6 @@ A "Manager" agent interfaces with the user to understand their specific needs. O
 
 
 ## Architecture
-
 
 ![Architecture Diagram](architecture_diagram.png "Architecture Diagram")
 
@@ -119,12 +116,13 @@ Agent: "I found a great option for you! The Riverside Lofts are $2,100/month. Th
 ## 📂 Project Structure
 ```
 apartment-finder-ai/
-├── agents/
-│   └── apartment_finder/
-│       ├── agent.py                              # Agent Definitions
-│       └── tools.py                              # Python Tools & MCP Wrapper Logic
+├── apartment_finder/
+│   ├── __init__.py                               # Entry point
+│   ├── agent.py                                  # Agent Definitions
+│   ├── instructions.py                           # Agent Instruction Prompts
+│   └── tools.py                                  # Python Tools & MCP Wrapper Logic
 ├── data/
-│   ├── apartments_cleaned.csv                    # Cleaned mock database
+│   ├── apartments_cleaned.csv                    # Cleaned mock apartments database
 │   └── apartments_for_rent_classified_100K.csv   # Raw dataset (from Kaggle)
 ├── main.py                                       # Entry point & Runner
 ├── package.json                                  # Node dependencies (MCP)

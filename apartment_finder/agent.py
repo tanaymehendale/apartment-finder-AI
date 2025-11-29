@@ -61,6 +61,6 @@ root_agent = LlmAgent(
     description="Conversational agent that gathers user requirements.",
     model=model,
     instruction=instructions.MANAGER_PROMPT,
-    sub_agents=[research_team],
-    output_key="user_requirements"
+    sub_agents=[research_team]
+    # output_key="user_requirements"
 )
