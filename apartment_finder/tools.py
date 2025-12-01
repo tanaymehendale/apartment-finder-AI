@@ -1,11 +1,13 @@
-# Define tools that agents will use
 import pandas as pd
 import json
 import os
+import asyncio
+from mcp import StdioServerParameters, ClientSession
+from mcp.client.stdio import stdio_client
 
-# --- 1. GLOBAL DATA LOADING (The "In-Memory Database") ---
-# We load this once when the app starts. 
-# This prevents re-reading the CSV for every user query.
+# --- GLOBAL DATA LOADING (The "In-Memory Database") ---
+# We load the dataset into memory immediately upon startup.
+# This ensures that agent queries are instant (O(1) lookup) rather than reading from disk every time.
 
 DATA_PATH = os.path.join("data", "apartments_cleaned.csv")
 
@@ -24,9 +26,9 @@ except FileNotFoundError:
     df = pd.DataFrame()
 
 
-# ------------------------------------------------------------------------------- #
-# TOOL 2: fetch_apartments - Gets relevant apartment data from mock dataset
-# ------------------------------------------------------------------------------- #
+# ------------------------------
+# CUSTOM FUNCTION DEFINITIONS
+# -----------------------------
 
 def fetch_apartments(city: str, state: str, max_budget: float):
     """
@@ -41,15 +43,15 @@ def fetch_apartments(city: str, state: str, max_budget: float):
         str: A JSON string containing the Top 5 matching apartments with 
              id, description, price, address, city, state, latitude, and longitude.
     """
-    # 1. Fail fast if DB is empty
+    # Fail fast if DB is empty
     if df.empty:
         return json.dumps({"error": "Database is unavailable."})
 
-    # 2. Normalize inputs for comparison (lowercase, stripped)
+    # Normalize inputs for comparison (lowercase, stripped)
     target_city = city.lower().strip()
     target_state = state.lower().strip()
     
-    # 3. Apply Filters
+    # Apply Filters
     # We look for exact state match and city match, plus budget.
     matches = df[
         (df['city'].str.lower() == target_city) & 
@@ -57,16 +59,16 @@ def fetch_apartments(city: str, state: str, max_budget: float):
         (df['monthly_price'] <= max_budget)
     ]
     
-    # 4. Handle "No Results"
+    # Handle "No Results"
     if matches.empty:
         return json.dumps({
             "message": f"No apartments found in {city}, {state} under ${max_budget}.",
             "count": 0
         })
 
-    # 5. Select Output Columns (Token Optimization)
-    # We only send specific columns to the Agent to save context window space.
-    # We exclude 'body' (description) as it's too long; 'agent_description' is better.
+    # Select Output Columns (Token Optimization)
+    # We select ONLY the columns the agent needs to reason and call the next tool.
+    # 'latitude' and 'longitude' are crucial for the subsequent Maps MCP call.
     results = matches[[
         'id', 
         'agent_description', 
@@ -76,17 +78,12 @@ def fetch_apartments(city: str, state: str, max_budget: float):
         'state', 
         'latitude', 
         'longitude'
-    ]].head(5) # STRICT LIMIT: Only top 5
+    ]].head(5) # STRICT LIMIT: Only top 5 to save on tokens
     
-    # 6. Return as JSON
+    # Return as JSON
     return results.to_json(orient="records")
 
-# --------------------------------------------------------- #
-# TOOL 3: check_commutes using Google Maps MCP Server
-# --------------------------------------------------------- #
-import asyncio
-from mcp import StdioServerParameters, ClientSession
-from mcp.client.stdio import stdio_client
+
 
 # Path to the local MCP server file (relative to project root)
 SERVER_PATH = os.path.join(os.getcwd(), "node_modules", "@modelcontextprotocol", "server-google-maps", "dist", "index.js")
@@ -105,7 +102,7 @@ async def check_commutes(origins: list[str], destination: str, mode: str = "driv
     """
     print(f"   🔌 MCP: Checking commutes for {len(origins)} locations to '{destination}'...")
 
-    # 1. Configure the Server Process
+    # Configure the Server Process
     server_params = StdioServerParameters(
         command="node", 
         args=[SERVER_PATH],
@@ -113,12 +110,12 @@ async def check_commutes(origins: list[str], destination: str, mode: str = "driv
     )
 
     try:
-        # 2. Connect to the Server
+        # Connect to the Server
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 
-                # 3. Call the 'maps_distance_matrix' tool
+                # Call the 'maps_distance_matrix' tool
                 # This single call processes ALL origins against the destination
                 result = await session.call_tool(
                     "maps_distance_matrix", 
@@ -129,10 +126,10 @@ async def check_commutes(origins: list[str], destination: str, mode: str = "driv
                     }
                 )
                 
-                # 1. Extract raw text (contains \n)
+                # Extract raw text (containing \n)
                 raw_text = result.content[0].text
                 
-                # 2. CLEANUP: Parse and re-dump to remove \n and spaces
+                # Parse and re-dump to remove \n and spaces
                 # This ensures the Agent gets valid, compact JSON
                 try:
                     data = json.loads(raw_text)

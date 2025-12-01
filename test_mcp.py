@@ -1,3 +1,4 @@
+# This is a test script to verify the working of the local Node.js MCP Server used for the 'check_commutes' tool
 import os
 import asyncio
 from dotenv import load_dotenv
@@ -23,7 +24,7 @@ async def run_test():
     # 2. CONFIGURE SERVER
     server_params = StdioServerParameters(
         command="node", # Run node directly
-        args=[script_path], # On this specific file
+        args=[script_path],
         env={
             "GOOGLE_MAPS_API_KEY": os.getenv("GOOGLE_MAPS_API_KEY")
         }

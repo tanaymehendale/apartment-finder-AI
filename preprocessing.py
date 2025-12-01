@@ -1,4 +1,4 @@
-# Preprocessing of mock data (using dataset from Kaggle)
+# This file contains preprocessing of mock database (using dataset from Kaggle)
 import pandas as pd
 import kagglehub
 import os
@@ -16,8 +16,6 @@ df_apartments = df_apartments.drop(columns=['title', 'amenities', 'fee', 'has_ph
 df_apartments = df_apartments.dropna(subset=['address', 'latitude'], how='all')
 
 # Convert datatypes into appropriate types
-
-# Convert category, body, currency, price_display, price_type, address, cityname, state to String
 df_apartments['category'] = df_apartments['category'].astype(str)
 df_apartments['body'] = df_apartments['body'].astype(str)
 df_apartments['currency'] = df_apartments['currency'].astype(str)
@@ -83,8 +81,6 @@ df_apartments = df_apartments.rename(columns={'price': 'monthly_price'})
 df_apartments.loc[df_apartments['monthly_price'].isnull(), 'monthly_price'] = df_apartments.loc[(df_apartments['city'] == 'Orlando') & (df_apartments['state'] == 'FL'), 'monthly_price'].mean()
 
 # Handle NaN and 0.0 for bathrooms and bedrooms
-
-
 # For bathrooms, fill NaN or 0.0 with 1.0 as any apartment has at least 1 bathroom
 df_apartments['bathrooms'] = df_apartments['bathrooms'].fillna(1.0)
 df_apartments.loc[df_apartments['bathrooms'] == 0.0, 'bathrooms'] = 1.0
@@ -93,8 +89,7 @@ df_apartments.loc[df_apartments['bathrooms'] == 0.0, 'bathrooms'] = 1.0
 # For bedrooms, assuming NaN is 1.0 (safe bet). If bedrooms = 0.0 then that means a Studio apartment
 df_apartments['bedrooms'] = df_apartments['bedrooms'].fillna(1.0)
 
-
-# This helps the LLM understand "0.0" means "Studio"
+# Create agent_description. This also helps the LLM understand "0.0" means "Studio"
 def make_desc(row):
     bed_str = "Studio" if row['bedrooms'] == 0.0 else f"{int(row['bedrooms'])} Bed"
     bath_str = f"{int(row['bathrooms'])} Bath"

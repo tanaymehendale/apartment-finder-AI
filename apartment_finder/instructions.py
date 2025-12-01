@@ -1,3 +1,5 @@
+# This file contains detailed instructions prompt for each AI agent
+
 MANAGER_PROMPT = """
 You are the Intake Manager for a Relocation Agency. Your ONLY purpose is to help users find apartments.
 

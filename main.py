@@ -1,8 +1,9 @@
+# This script runs the AI agent locally on command line (without ADK Web)
 import asyncio
 import os
 from dotenv import load_dotenv
-from google.adk.runners import InMemoryRunner 
-from agents.apartment_finder.agent import root_agent
+from google.adk.runners import InMemoryRunner
+from apartment_finder.agent import root_agent
 
 load_dotenv()
 
@@ -36,7 +37,7 @@ async def main():
             traceback.print_exc()
 
 if __name__ == "__main__":
-    # Ensure we have the Maps Key before starting
+    # Ensuring we have set the Maps Key before starting
     if not os.getenv("GOOGLE_MAPS_API_KEY"):
         print("⚠️ WARNING: GOOGLE_MAPS_API_KEY is missing from .env")
     

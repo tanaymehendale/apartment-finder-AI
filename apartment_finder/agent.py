@@ -2,6 +2,7 @@ import os
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.genai import types
 from google.adk.models.google_llm import Gemini
+from google.adk.tools import FunctionTool
 from google.adk.tools import google_search
 from typing import List
 from . import instructions
@@ -24,8 +25,7 @@ analyst = LlmAgent(
     model=model,
     description="Executes tools to find and analyze apartments.",
     instruction=instructions.ANALYST_PROMPT,
-    # It uses only custom tools: Custom (Inventory), MCP (Commute)
-    tools=[tools.fetch_apartments, tools.check_commutes], 
+    tools=[FunctionTool(tools.fetch_apartments), FunctionTool(tools.check_commutes)], 
     output_key="analyst_dossier"
 )
 
