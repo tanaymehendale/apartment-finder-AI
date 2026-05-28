@@ -2,7 +2,6 @@ google-genai
 google-adk
 pandas
 python-dotenv
-mcp
-kagglehub
-# google-cloud-aiplatform[adk,agent_engines]
-# uv
+googlemaps
+httpx
+# google-cloud-aiplatform[adk,agent_engines]  # Uncomment for Cloud Run / Vertex AI Agent Engine deployment

@@ -1,31 +1,27 @@
-import os
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.genai import types
 from google.adk.models.google_llm import Gemini
 from google.adk.tools import FunctionTool
 from google.adk.tools import google_search
-from typing import List
 from . import instructions
 from . import tools
 
 retry_config = types.HttpRetryOptions(
-    attempts=5,  # Maximum retry attempts
-    exp_base=7,  # Delay multiplier
+    attempts=5,
+    exp_base=2,   # Fixed: was 7, which caused delays up to 343s between retries
     initial_delay=1,
-    http_status_codes=[429, 500, 503, 504],  # Retry on these HTTP errors
+    http_status_codes=[429, 500, 503, 504],
 )
 
-# Defining the Model
 model = Gemini(model="gemini-2.5-flash", retry_options=retry_config)
 
-# Defining Sub-Agents of the Research Team
 # --- 1. THE ANALYST AGENT ---
 analyst = LlmAgent(
     name="analyst",
     model=model,
     description="Executes tools to find and analyze apartments.",
     instruction=instructions.ANALYST_PROMPT,
-    tools=[FunctionTool(tools.fetch_apartments), FunctionTool(tools.check_commutes)], 
+    tools=[FunctionTool(tools.fetch_apartments), FunctionTool(tools.check_commutes)],
     output_key="analyst_dossier"
 )
 
@@ -55,11 +51,13 @@ research_team = SequentialAgent(
 )
 
 # --- ROOT AGENT (MAIN) ---
-
+# store_requirements writes user input to session state before ResearchTeam runs,
+# avoiding the fragile "read last Manager message" pattern that breaks on one-shot queries.
 root_agent = LlmAgent(
     name="manager",
     description="Conversational agent that gathers user requirements.",
     model=model,
     instruction=instructions.MANAGER_PROMPT,
+    tools=[FunctionTool(tools.store_requirements)],
     sub_agents=[research_team]
 )
