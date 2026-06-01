@@ -1,3 +1,19 @@
+# Python
 .venv/
 .env
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
 node_modules/
+
+# Next.js build output
+frontend/.next/
+frontend/tsconfig.tsbuildinfo
+
+# Claude Code local settings (machine-specific, may contain private paths)
+.claude/
+
+# Local data / tracking files
+data/rentcast_usage.json
