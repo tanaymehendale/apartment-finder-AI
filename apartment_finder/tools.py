@@ -3,6 +3,7 @@ import json
 import os
 import googlemaps
 import httpx
+from datetime import datetime
 from pathlib import Path
 from google.adk.tools.tool_context import ToolContext
 
@@ -58,14 +59,50 @@ def _normalize(listing: dict, city: str, state: str) -> dict:
 
 
 # ─── Provider 1: RentCast API (primary) ──────────────────────────────────────
-# Free tier: 50 calls/month. Set RENTCAST_API_KEY in .env.
+# Free tier: 50 calls/month. Guardrails: max 2 calls per run, block at 50/month.
 
 _RENTCAST_URL = "https://api.rentcast.io/v1/listings/rental/long-term"
+_RENTCAST_MONTHLY_LIMIT = 50
+_RENTCAST_MAX_PER_RUN = 2
+_RENTCAST_USAGE_FILE = _PROJECT_ROOT / "data" / "rentcast_usage.json"
+
+_rentcast_run_count = 0  # resets on process restart (i.e., per agent session)
+
+
+def _load_rentcast_usage() -> dict:
+    current_month = datetime.now().strftime("%Y-%m")
+    if _RENTCAST_USAGE_FILE.exists():
+        try:
+            with open(_RENTCAST_USAGE_FILE) as f:
+                data = json.load(f)
+            if data.get("month") == current_month:
+                return data
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return {"month": current_month, "count": 0}
+
+
+def _save_rentcast_usage(usage: dict) -> None:
+    _RENTCAST_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_RENTCAST_USAGE_FILE, "w") as f:
+        json.dump(usage, f)
+
 
 def _fetch_rentcast(city: str, state: str, max_budget: float) -> list[dict] | None:
+    global _rentcast_run_count
     api_key = os.getenv("RENTCAST_API_KEY")
     if not api_key:
         return None  # Not configured; skip
+
+    if _rentcast_run_count >= _RENTCAST_MAX_PER_RUN:
+        print(f"   ⛔ RentCast per-run limit ({_RENTCAST_MAX_PER_RUN}) reached. Switching to next provider.")
+        return None
+
+    usage = _load_rentcast_usage()
+    if usage["count"] >= _RENTCAST_MONTHLY_LIMIT:
+        print(f"   ⛔ RentCast monthly limit ({_RENTCAST_MONTHLY_LIMIT}) reached. Switching to Apify fallback.")
+        return None
+
     response = httpx.get(
         _RENTCAST_URL,
         headers={"X-Api-Key": api_key},
@@ -73,17 +110,30 @@ def _fetch_rentcast(city: str, state: str, max_budget: float) -> list[dict] | No
         timeout=10.0
     )
     response.raise_for_status()
+
+    _rentcast_run_count += 1
+    usage["count"] += 1
+    _save_rentcast_usage(usage)
+    print(f"   📊 RentCast usage: {usage['count']}/{_RENTCAST_MONTHLY_LIMIT} this month | {_rentcast_run_count}/{_RENTCAST_MAX_PER_RUN} this run")
+
     listings = response.json()
     return [_normalize(l, city, state) for l in listings[:5]] if listings else []
 
 
 # ─── Provider 2: Apify Zillow Scraper (secondary) ────────────────────────────
-# Free tier: ~$5 platform credit/month. Set APIFY_API_KEY in .env.
+# Pricing: $2.3/1000 results. Guardrail: cap at $0.20/run → max 86 results.
+
+_APIFY_MAX_BUDGET_USD = 0.20
+_APIFY_COST_PER_1000 = 2.3
+_APIFY_MAX_ITEMS = int(_APIFY_MAX_BUDGET_USD / _APIFY_COST_PER_1000 * 1000)  # = 86
+
 
 def _fetch_apify(city: str, state: str, max_budget: float) -> list[dict] | None:
     api_key = os.getenv("APIFY_API_KEY")
     if not api_key:
         return None  # Not configured; skip
+
+    safe_max_items = min(5, _APIFY_MAX_ITEMS)
     response = httpx.post(
         "https://api.apify.com/v2/acts/maxcopell~zillow-scraper/run-sync-get-dataset-items",
         headers={"Authorization": f"Bearer {api_key}"},
@@ -92,7 +142,7 @@ def _fetch_apify(city: str, state: str, max_budget: float) -> list[dict] | None:
             "city": city,
             "state": state,
             "maxPrice": int(max_budget),
-            "maxItems": 5,
+            "maxItems": safe_max_items,
             "status": "forRent",
         },
         timeout=90.0,
@@ -100,7 +150,7 @@ def _fetch_apify(city: str, state: str, max_budget: float) -> list[dict] | None:
     response.raise_for_status()
     listings = response.json()
     results = []
-    for l in listings[:5]:
+    for l in listings[:safe_max_items]:
         addr = l.get("address")
         raw = {
             "id": l.get("zpid"),
