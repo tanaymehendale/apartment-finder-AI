@@ -53,9 +53,23 @@ YOUR WORKFLOW:
    - If the result contains "error": true, note the commute data as unavailable and continue.
 
 YOUR OUTPUT:
-Compile a structured summary with:
-- Top 3 Apartment Details: description, price, address
-- Commute distance and duration for each apartment
+Your response MUST begin with a JSON array (no prose before it), then a commute summary.
+
+STEP 1 — Output this JSON array FIRST, before any other text:
+[
+  {
+    "id": "<id from fetch_apartments result>",
+    "agent_description": "<agent_description from fetch_apartments result>",
+    "monthly_price": <number>,
+    "address": "<full address string>",
+    "latitude": <number>,
+    "longitude": <number>
+  }
+]
+Use the exact field values returned by fetch_apartments — do not paraphrase or rename fields.
+
+STEP 2 — After the JSON array, write one line per apartment:
+"<address> — X min commute (Y miles)"
 Report data only. No filler text.
 """
 

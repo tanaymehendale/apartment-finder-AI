@@ -2,6 +2,8 @@
 Manages ADK InMemoryRunner sessions for the FastAPI server.
 One (runner, session_id) pair per user conversation.
 """
+import asyncio
+import re
 import uuid
 from typing import AsyncGenerator
 from google.adk.runners import InMemoryRunner
@@ -10,6 +12,16 @@ from apartment_finder.agent import root_agent
 
 # In-memory registry: session_id → (runner, adk_session_id, user_id)
 _sessions: dict[str, tuple[InMemoryRunner, str, str]] = {}
+
+MAX_RETRIES = 3
+
+AGENT_LABELS = {
+    "manager": ("Manager", "Collecting your requirements…"),
+    "analyst": ("Analyst", "Searching listings & checking commutes…"),
+    "reviewer": ("Reviewer", "Researching neighborhood safety…"),
+    "summarizer": ("Summarizer", "Writing your recommendation…"),
+    "ResearchTeam": ("Research Team", "Running full research pipeline…"),
+}
 
 
 async def create_session() -> str:
@@ -28,13 +40,16 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
     """
     Send a message to an existing session and yield SSE event dicts.
     Yields:
-      {"type": "status", "agent": str, "step": str}
-      {"type": "token",  "content": str}
-      {"type": "state",  "analyst_dossier": str, "safety_report": str}
+      {"type": "status",  "agent": str, "step": str}
+      {"type": "token",   "content": str, "author": str}
+      {"type": "waiting", "seconds": int, "agent": str}
+      {"type": "state",   "analyst_dossier": str, "safety_report": str}
+      {"type": "error",   "content": str}
       {"type": "done"}
     """
     if session_id not in _sessions:
         yield {"type": "error", "content": "Session not found."}
+        yield {"type": "done"}
         return
 
     runner, adk_session_id, user_id = _sessions[session_id]
@@ -44,56 +59,66 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
         parts=[types.Part(text=message)],
     )
 
-    AGENT_LABELS = {
-        "manager": ("Manager", "Collecting your requirements…"),
-        "analyst": ("Analyst", "Searching listings & checking commutes…"),
-        "reviewer": ("Reviewer", "Researching neighborhood safety…"),
-        "summarizer": ("Summarizer", "Writing your recommendation…"),
-        "ResearchTeam": ("Research Team", "Running full research pipeline…"),
-    }
+    last_active_agent = "Manager"
 
-    seen_authors: set[str] = set()
+    for attempt in range(MAX_RETRIES):
+        seen_authors: set[str] = set()
 
-    try:
-        async for event in runner.run_async(
-            user_id=user_id,
-            session_id=adk_session_id,
-            new_message=new_message,
-        ):
-            author = getattr(event, "author", None) or ""
+        try:
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=adk_session_id,
+                new_message=new_message,
+            ):
+                author = getattr(event, "author", None) or ""
 
-            # Emit a status event the first time we see each sub-agent
-            if author and author != "user" and author not in seen_authors:
-                seen_authors.add(author)
-                label, step = AGENT_LABELS.get(author, (author.title(), f"{author} is working…"))
-                yield {"type": "status", "agent": label, "step": step}
+                # Emit a status event the first time we see each sub-agent
+                if author and author != "user" and author not in seen_authors:
+                    seen_authors.add(author)
+                    label, step = AGENT_LABELS.get(author, (author.title(), f"{author} is working…"))
+                    last_active_agent = label
+                    yield {"type": "status", "agent": label, "step": step}
 
-            # Stream text tokens
-            content = event.content
-            if content and content.parts:
-                for part in content.parts:
-                    if part.text:
-                        yield {"type": "token", "content": part.text, "author": author}
+                # Stream text tokens
+                content = event.content
+                if content and content.parts:
+                    for part in content.parts:
+                        if part.text:
+                            yield {"type": "token", "content": part.text, "author": author}
 
-    except Exception as exc:
-        error_msg = str(exc)
-        # Extract retry delay from 429 messages for a helpful hint
-        retry_hint = ""
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            import re
-            delay_match = re.search(r"retry in (\d+)", error_msg, re.IGNORECASE)
-            wait = delay_match.group(1) if delay_match else "~35"
-            retry_hint = f" The API rate limit was hit — please wait {wait} seconds and try again."
-            yield {
-                "type": "error",
-                "content": f"Rate limit reached (Gemini free tier: 5 requests/minute).{retry_hint}",
-            }
-        else:
-            yield {"type": "error", "content": f"An error occurred: {error_msg[:200]}"}
-        yield {"type": "done"}
-        return
+            # Successful run — exit retry loop
+            break
 
-    # After the stream ends, emit session state so the frontend can render cards
+        except Exception as exc:
+            error_msg = str(exc)
+            is_rate_limit = "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg
+
+            if is_rate_limit and attempt < MAX_RETRIES - 1:
+                delay_match = re.search(r"retry in (\d+)", error_msg, re.IGNORECASE)
+                wait_seconds = int(delay_match.group(1)) if delay_match else 35
+
+                # Stream countdown events every 5s to keep SSE alive and update the UI
+                remaining = wait_seconds
+                while remaining > 0:
+                    yield {"type": "waiting", "seconds": remaining, "agent": last_active_agent}
+                    sleep_for = min(5, remaining)
+                    await asyncio.sleep(sleep_for)
+                    remaining -= sleep_for
+
+                # Loop back for retry (seen_authors resets at top of loop)
+                continue
+            else:
+                if is_rate_limit:
+                    yield {
+                        "type": "error",
+                        "content": f"Rate limit reached after {attempt + 1} attempt(s). Please wait a moment and try again.",
+                    }
+                else:
+                    yield {"type": "error", "content": f"An error occurred: {error_msg[:200]}"}
+                yield {"type": "done"}
+                return
+
+    # After successful run, emit session state so the frontend can render cards
     try:
         adk_session = await runner.session_service.get_session(
             app_name="apartment_finder",

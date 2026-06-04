@@ -6,11 +6,19 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   onSelectSession: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void;
   onNewSearch: () => void;
   currentSessionId: string | null;
 }
 
-export function ConversationSidebar({ isOpen, onClose, onSelectSession, onNewSearch, currentSessionId }: Props) {
+export function ConversationSidebar({
+  isOpen,
+  onClose,
+  onSelectSession,
+  onDeleteSession,
+  onNewSearch,
+  currentSessionId,
+}: Props) {
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
 
   useEffect(() => {
@@ -29,6 +37,29 @@ export function ConversationSidebar({ isOpen, onClose, onSelectSession, onNewSea
     if (diffMin < 60) return `${diffMin}m ago`;
     if (diffMin < 1440) return `${Math.floor(diffMin / 60)}h ago`;
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function deleteSession(sessionId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+
+    // Remove from session index
+    const updated = sessions.filter((s) => s.id !== sessionId);
+    setSessions(updated);
+    localStorage.setItem("apt_sessions", JSON.stringify(updated));
+
+    // Remove the stored messages for this session
+    localStorage.removeItem(`apt_messages_${sessionId}`);
+
+    // Notify parent if the active session was deleted
+    onDeleteSession(sessionId);
+  }
+
+  function clearAll() {
+    sessions.forEach((s) => localStorage.removeItem(`apt_messages_${s.id}`));
+    localStorage.removeItem("apt_sessions");
+    setSessions([]);
+    // If any session was active, reset it
+    if (currentSessionId) onDeleteSession(currentSessionId);
   }
 
   return (
@@ -81,33 +112,65 @@ export function ConversationSidebar({ isOpen, onClose, onSelectSession, onNewSea
               <p className="text-xs text-gray-400">No past searches yet</p>
             </div>
           ) : (
-            sessions.map((session) => (
-              <button
-                key={session.id}
-                onClick={() => { onSelectSession(session.id); onClose(); }}
-                className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors group ${
-                  currentSessionId === session.id ? "bg-primary-50" : ""
-                }`}
-              >
-                <div className="flex items-start gap-2">
-                  <div className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                    currentSessionId === session.id ? "bg-primary" : "bg-gray-300 group-hover:bg-gray-400"
-                  }`} />
-                  <div className="min-w-0 flex-1">
-                    <p className={`text-xs font-medium truncate ${
-                      currentSessionId === session.id ? "text-primary" : "text-gray-700"
-                    }`}>
-                      {session.title}
-                    </p>
-                    <p className="text-[10px] text-gray-400 mt-0.5">
-                      {formatDate(session.createdAt)}
-                    </p>
-                  </div>
+            sessions.map((session) => {
+              const isActive = currentSessionId === session.id;
+              return (
+                <div
+                  key={session.id}
+                  className={`group flex items-center px-3 py-2.5 hover:bg-gray-50 transition-colors ${
+                    isActive ? "bg-primary-50" : ""
+                  }`}
+                >
+                  {/* Select area */}
+                  <button
+                    onClick={() => { onSelectSession(session.id); onClose(); }}
+                    className="flex items-start gap-2 flex-1 min-w-0 text-left"
+                  >
+                    <div className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      isActive ? "bg-primary" : "bg-gray-300 group-hover:bg-gray-400"
+                    }`} />
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-xs font-medium truncate ${
+                        isActive ? "text-primary" : "text-gray-700"
+                      }`}>
+                        {session.title}
+                      </p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        {formatDate(session.createdAt)}
+                      </p>
+                    </div>
+                  </button>
+
+                  {/* Delete button — visible on hover */}
+                  <button
+                    onClick={(e) => deleteSession(session.id, e)}
+                    title="Delete this search"
+                    className="ml-1 flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-500 text-gray-400 transition-all"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
                 </div>
-              </button>
-            ))
+              );
+            })
           )}
         </div>
+
+        {/* Footer — clear all */}
+        {sessions.length > 0 && (
+          <div className="px-3 py-3 border-t border-gray-100">
+            <button
+              onClick={clearAll}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Clear all history
+            </button>
+          </div>
+        )}
       </div>
     </>
   );

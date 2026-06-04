@@ -1,4 +1,5 @@
 "use client";
+import ReactMarkdown from "react-markdown";
 import type { ChatMessage } from "@/lib/types";
 
 interface Props {
@@ -29,8 +30,8 @@ export function MessageBubble({ message }: Props) {
             <path d="M10 6a1 1 0 011 1v3.586l2.707 2.707a1 1 0 01-1.414 1.414l-3-3A1 1 0 019 11V7a1 1 0 011-1z" />
           </svg>
         </div>
-        <div className="px-4 py-2.5 bg-white border border-gray-100 rounded-2xl rounded-tl-sm text-sm leading-relaxed text-gray-800 shadow-sm whitespace-pre-wrap">
-          {message.content}
+        <div className="px-4 py-2.5 bg-white border border-gray-100 rounded-2xl rounded-tl-sm text-sm leading-relaxed text-gray-800 shadow-sm [&_h3]:font-bold [&_h3]:text-sm [&_h3]:mt-2 [&_h3]:mb-1 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-4 [&_li]:my-0.5 [&_p]:mb-1 [&_p:last-child]:mb-0">
+          <ReactMarkdown>{message.content}</ReactMarkdown>
         </div>
       </div>
     </div>

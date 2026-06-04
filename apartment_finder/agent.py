@@ -8,7 +8,7 @@ from . import tools
 
 retry_config = types.HttpRetryOptions(
     attempts=5,
-    exp_base=2,   # Fixed: was 7, which caused delays up to 343s between retries
+    exp_base=7,   # Long backoff keeps retries outside the 60s RPM window on free tier
     initial_delay=1,
     http_status_codes=[429, 500, 503, 504],
 )

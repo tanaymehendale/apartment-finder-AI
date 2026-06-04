@@ -1,26 +1,63 @@
 "use client";
-import type { AgentStatusEvent, AgentName } from "@/lib/types";
+import { useEffect, useState } from "react";
+import type { AgentStatusEvent } from "@/lib/types";
 
-const PIPELINE: { agent: AgentName; label: string; icon: string }[] = [
-  { agent: "Manager",   label: "Requirements", icon: "📋" },
-  { agent: "Analyst",   label: "Listings",     icon: "🏠" },
-  { agent: "Reviewer",  label: "Safety",        icon: "🛡️" },
-  { agent: "Summarizer",label: "Summary",       icon: "✨" },
-];
+const PIPELINE = ["Manager", "Analyst", "Reviewer", "Summarizer"] as const;
 
-// Maps every possible author name to its pipeline step
-const AGENT_TO_STEP: Record<string, AgentName> = {
-  Manager:        "Manager",
-  manager:        "Manager",
-  Analyst:        "Analyst",
-  analyst:        "Analyst",
-  Reviewer:       "Reviewer",
-  reviewer:       "Reviewer",
-  Summarizer:     "Summarizer",
-  summarizer:     "Summarizer",
-  "Research Team": "Analyst",
-  ResearchTeam:   "Analyst",
+const PHRASES: Record<string, string[]> = {
+  Manager: [
+    "Reviewing your requirements…",
+    "Parsing your request…",
+    "Checking what you need…",
+    "Getting your details ready…",
+  ],
+  "Research Team": [
+    "Kicking off the research pipeline…",
+    "Coordinating the team…",
+    "Spinning up agents…",
+  ],
+  Analyst: [
+    "Scanning rental listings…",
+    "Fetching apartments in your area…",
+    "Calculating commute times…",
+    "Comparing prices to your budget…",
+    "Running Distance Matrix API…",
+    "Narrowing down the best options…",
+    "Checking availability…",
+    "Crunching the numbers…",
+  ],
+  Reviewer: [
+    "Researching neighborhood safety…",
+    "Checking local reviews…",
+    "Looking up area reputation…",
+    "Digging into community feedback…",
+    "Searching for resident experiences…",
+    "Assessing quality of life…",
+    "Reading between the lines…",
+  ],
+  Summarizer: [
+    "Weighing price vs. commute vs. safety…",
+    "Drafting your recommendation…",
+    "Ranking your top picks…",
+    "Putting the final report together…",
+    "Highlighting the best value…",
+    "Almost done…",
+  ],
+  waiting: [
+    "Rate limited — waiting for reset…",
+    "API quota reached, retrying soon…",
+    "Pausing for rate limit window…",
+    "Will retry automatically…",
+  ],
 };
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function getActiveIndex(agent: string): number {
+  if (agent === "Research Team") return 1; // maps to Analyst
+  const idx = PIPELINE.indexOf(agent as typeof PIPELINE[number]);
+  return idx === -1 ? 0 : idx;
+}
 
 interface Props {
   status: AgentStatusEvent | null;
@@ -28,79 +65,91 @@ interface Props {
 }
 
 export function AgentStatus({ status, isStreaming }: Props) {
+  const [spinnerIdx, setSpinnerIdx] = useState(0);
+  const [phraseIdx, setPhraseIdx] = useState(0);
+  const [visible, setVisible] = useState(true);
+
+  const agent = status?.agent ?? "Manager";
+  const isWaiting = status?.step === "waiting";
+  const phraseKey = isWaiting ? "waiting" : agent;
+  const phrases = PHRASES[phraseKey] ?? PHRASES.Manager;
+  const activeIdx = getActiveIndex(agent);
+
+  // Reset phrase when agent or waiting state changes
+  useEffect(() => {
+    setPhraseIdx(0);
+    setVisible(true);
+  }, [agent, isWaiting]);
+
+  // Spinner — 80 ms per frame
+  useEffect(() => {
+    if (!isStreaming) return;
+    const id = setInterval(
+      () => setSpinnerIdx((i) => (i + 1) % SPINNER_FRAMES.length),
+      80,
+    );
+    return () => clearInterval(id);
+  }, [isStreaming]);
+
+  // Phrase cycling with fade-out → swap → fade-in
+  useEffect(() => {
+    if (!isStreaming) return;
+    const id = setInterval(() => {
+      setVisible(false);
+      setTimeout(() => {
+        setPhraseIdx((i) => (i + 1) % phrases.length);
+        setVisible(true);
+      }, 250);
+    }, 2800);
+    return () => clearInterval(id);
+  }, [isStreaming, phrases.length]);
+
   if (!isStreaming && !status) return null;
 
-  const activeAgent: AgentName =
-    status ? (AGENT_TO_STEP[status.agent] ?? "Manager") : "Manager";
-  const activeIndex = PIPELINE.findIndex((s) => s.agent === activeAgent);
-  const stepLabel = status?.step ?? "Starting…";
-
   return (
-    <div className="mx-4 mb-3 p-3 bg-white border border-blue-100 rounded-2xl shadow-sm animate-fade-in">
-      {/* Step label */}
-      <div className="flex items-center gap-2 mb-2.5">
-        <span className="flex gap-0.5">
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              className="inline-block w-1.5 h-1.5 rounded-full bg-primary animate-pulse-dot"
-              style={{ animationDelay: `${i * 0.18}s` }}
-            />
-          ))}
-        </span>
-        <span className="text-xs font-medium text-primary">{stepLabel}</span>
-      </div>
+    <div className="mx-4 mb-3 px-1 space-y-1.5 select-none">
+      {PIPELINE.map((name, i) => {
+        // Only render completed and active stages — hide upcoming ones
+        if (i > activeIdx) return null;
 
-      {/* Pipeline steps */}
-      <div className="flex items-center gap-0">
-        {PIPELINE.map((step, i) => {
-          const isDone = i < activeIndex;
-          const isActive = i === activeIndex;
-          const isPending = i > activeIndex;
+        const isDone = i < activeIdx;
+        const isActive = i === activeIdx;
 
-          return (
-            <div key={step.agent} className="flex items-center flex-1 min-w-0">
-              {/* Step node */}
-              <div className="flex flex-col items-center flex-shrink-0">
-                <div
-                  className={`
-                    w-7 h-7 rounded-full flex items-center justify-center text-sm transition-all duration-300
-                    ${isDone  ? "bg-green-100 text-green-600 ring-2 ring-green-200" : ""}
-                    ${isActive ? "bg-primary text-white ring-2 ring-primary/20 shadow-md scale-110" : ""}
-                    ${isPending ? "bg-gray-100 text-gray-400" : ""}
-                  `}
+        return (
+          <div key={name}>
+            <div className="flex items-center gap-2">
+              <span
+                className={`w-4 font-mono text-xs leading-none ${
+                  isDone ? "text-green-500" : "text-primary"
+                }`}
+                aria-hidden
+              >
+                {isDone ? "✓" : SPINNER_FRAMES[spinnerIdx]}
+              </span>
+              <span
+                className={`text-xs ${
+                  isDone
+                    ? "text-gray-400"
+                    : "text-gray-700 font-medium"
+                }`}
+              >
+                {name}
+              </span>
+            </div>
+
+            {isActive && (
+              <div className="ml-6 mt-0.5">
+                <span
+                  className="text-xs text-muted transition-opacity duration-[250ms]"
+                  style={{ opacity: visible ? 1 : 0 }}
                 >
-                  {isDone ? (
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                    </svg>
-                  ) : (
-                    <span className="text-[13px] leading-none">{step.icon}</span>
-                  )}
-                </div>
-                <span className={`text-[9px] mt-1 font-medium text-center leading-none ${
-                  isActive ? "text-primary" : isDone ? "text-green-600" : "text-gray-400"
-                }`}>
-                  {step.label}
+                  {phrases[phraseIdx]}
                 </span>
               </div>
-
-              {/* Connector line */}
-              {i < PIPELINE.length - 1 && (
-                <div className="flex-1 mx-1 mb-3">
-                  <div className="h-0.5 w-full rounded-full overflow-hidden bg-gray-100">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        isDone ? "bg-green-400 w-full" : "bg-gray-200 w-0"
-                      }`}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

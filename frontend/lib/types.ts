@@ -42,6 +42,7 @@ export interface ConversationSession {
 export type SSEEvent =
   | { type: "token"; content: string; author: string }
   | { type: "status"; agent: AgentName; step: string }
+  | { type: "waiting"; seconds: number; agent: string }
   | { type: "state"; analyst_dossier: string; safety_report: string }
   | { type: "done" }
   | { type: "error"; content: string };

@@ -7,12 +7,17 @@ import { useChat } from "@/hooks/useChat";
 
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { messages, agentStatus, apartments, isStreaming, sendMessage, resetSession, sessionId } = useChat();
+  const { messages, agentStatus, apartments, isStreaming, sendMessage, resetSession, restoreSession, sessionId } = useChat();
 
-  function handleSelectSession(_sessionId: string) {
-    // Session restoration: currently just resets — full restore would require
-    // fetching historical messages from the backend (future enhancement).
-    resetSession();
+  function handleSelectSession(selectedSessionId: string) {
+    restoreSession(selectedSessionId);
+  }
+
+  function handleDeleteSession(deletedSessionId: string) {
+    // If the deleted session is currently open, reset to a blank state
+    if (sessionId === deletedSessionId) {
+      resetSession();
+    }
   }
 
   return (
@@ -33,6 +38,7 @@ export function AppShell() {
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onSelectSession={handleSelectSession}
+        onDeleteSession={handleDeleteSession}
         onNewSearch={resetSession}
         currentSessionId={sessionId}
       />
