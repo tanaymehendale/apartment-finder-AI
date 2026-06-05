@@ -229,17 +229,18 @@ def fetch_apartments(city: str, state: str, max_budget: float) -> str:
             if results is None:
                 continue  # Provider not configured; try next
             if len(results) == 0:
-                return json.dumps({
-                    "message": f"No apartments found in {city}, {state} under ${max_budget}.",
-                    "count": 0
-                })
+                print(f"   ℹ️  Provider '{provider_name}' returned 0 results. Trying next.")
+                continue  # Empty results; try next provider before giving up
             print(f"   🏠 Listings retrieved from: {provider_name}")
             return json.dumps(results)
         except Exception as e:
             print(f"   ⚠️  Provider '{provider_name}' failed: {e}")
             continue
 
-    return json.dumps({"error": "All listing providers unavailable.", "count": 0})
+    return json.dumps({
+        "message": f"No apartments found in {city}, {state} under ${max_budget}/mo across all providers.",
+        "count": 0
+    })
 
 
 def store_requirements(

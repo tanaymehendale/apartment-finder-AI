@@ -32,6 +32,17 @@ export function useChat() {
     }
   }, [messages]);
 
+  // Persist apartments alongside messages so restoreSession can reload them
+  useEffect(() => {
+    const id = sessionIdRef.current;
+    if (!id || apartments.length === 0) return;
+    try {
+      localStorage.setItem(`apt_apartments_${id}`, JSON.stringify(apartments));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [apartments]);
+
   const sendMessage = useCallback(async (userText: string) => {
     if (isStreaming || !userText.trim()) return;
 
@@ -78,6 +89,10 @@ export function useChat() {
     let analystDossier = "";
     let safetyReport = "";
     let receivedContent = false;
+    // Track which bubble each agent's tokens go into so Manager and Summarizer
+    // appear as separate messages rather than being concatenated into one.
+    let currentBubbleId = assistantMsgId;
+    let currentBubbleAuthor: string | null = null;
 
     try {
       while (true) {
@@ -110,9 +125,24 @@ export function useChat() {
             const isIntermediate = INTERMEDIATE_AGENTS.has(event.author ?? "");
             if (!isIntermediate && event.content) {
               receivedContent = true;
+              const tokenAuthor = event.author ?? "";
+
+              // New author → new bubble (first author re-uses the placeholder bubble)
+              if (tokenAuthor !== currentBubbleAuthor) {
+                if (currentBubbleAuthor !== null) {
+                  const newId = uid();
+                  currentBubbleId = newId;
+                  setMessages((prev) => [
+                    ...prev,
+                    { id: newId, role: "assistant", content: "", timestamp: new Date() },
+                  ]);
+                }
+                currentBubbleAuthor = tokenAuthor;
+              }
+
               setMessages((prev) =>
                 prev.map((m) =>
-                  m.id === assistantMsgId
+                  m.id === currentBubbleId
                     ? { ...m, content: m.content + event.content }
                     : m
                 )
@@ -122,7 +152,7 @@ export function useChat() {
             receivedContent = true;
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === assistantMsgId
+                m.id === currentBubbleId
                   ? { ...m, content: `⚠️ ${event.content}` }
                   : m
               )
@@ -146,7 +176,7 @@ export function useChat() {
       if (!receivedContent) {
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantMsgId
+            m.id === currentBubbleId
               ? {
                   ...m,
                   content:
@@ -169,6 +199,7 @@ export function useChat() {
 
   const restoreSession = useCallback((sessionId: string) => {
     sessionIdRef.current = sessionId;
+
     const stored = localStorage.getItem(`apt_messages_${sessionId}`);
     if (stored) {
       try {
@@ -180,7 +211,18 @@ export function useChat() {
     } else {
       setMessages([]);
     }
-    setApartments([]);
+
+    const storedApts = localStorage.getItem(`apt_apartments_${sessionId}`);
+    if (storedApts) {
+      try {
+        setApartments(JSON.parse(storedApts));
+      } catch {
+        setApartments([]);
+      }
+    } else {
+      setApartments([]);
+    }
+
     setAgentStatus(null);
     setIsStreaming(false);
   }, []);

@@ -79,10 +79,26 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
                     last_active_agent = label
                     yield {"type": "status", "agent": label, "step": step}
 
-                # Stream text tokens
+                # Stream text tokens; also detect tool calls for fallback status events.
+                # ADK sub-agents don't always surface their name in event.author, so we
+                # infer Analyst / Reviewer activity from which tool is being invoked.
                 content = event.content
                 if content and content.parts:
                     for part in content.parts:
+                        fn_call = getattr(part, "function_call", None)
+                        if fn_call:
+                            fn_name = getattr(fn_call, "name", "") or ""
+                            if fn_name in ("fetch_apartments", "check_commutes") and "analyst" not in seen_authors:
+                                seen_authors.add("analyst")
+                                label, step = AGENT_LABELS["analyst"]
+                                last_active_agent = label
+                                yield {"type": "status", "agent": label, "step": step}
+                            elif fn_name == "google_search" and "reviewer" not in seen_authors:
+                                seen_authors.add("reviewer")
+                                label, step = AGENT_LABELS["reviewer"]
+                                last_active_agent = label
+                                yield {"type": "status", "agent": label, "step": step}
+
                         if part.text:
                             yield {"type": "token", "content": part.text, "author": author}
 

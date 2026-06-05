@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import type { Apartment } from "@/lib/types";
 import { ApartmentCard } from "./ApartmentCard";
 
-const MapView = dynamic(() => import("@/components/map/MapView").then((m) => m.MapView), {
+const MapView = dynamic(() => import("@/components/map/MapView").then((m) => ({ default: m.MapView })), {
   ssr: false,
   loading: () => (
     <div className="flex items-center justify-center h-full bg-gray-50 rounded-2xl">

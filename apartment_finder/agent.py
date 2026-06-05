@@ -1,6 +1,7 @@
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.genai import types
 from google.adk.models.google_llm import Gemini
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools import FunctionTool
 from google.adk.tools import google_search
 from . import instructions
@@ -13,12 +14,17 @@ retry_config = types.HttpRetryOptions(
     http_status_codes=[429, 500, 503, 504],
 )
 
-model = Gemini(model="gemini-2.5-flash", retry_options=retry_config)
+# Gemini kept ONLY for Reviewer — google_search grounding requires a Gemini model.
+gemini_model = Gemini(model="gemini-2.5-flash-lite", retry_options=retry_config)
+
+# OpenAI for all other agents; reduces Gemini calls by ~75% per query.
+# OPENAI_API_KEY is read automatically from .env.
+openai_model = LiteLlm(model="openai/gpt-4o-mini", num_retries=5)
 
 # --- 1. THE ANALYST AGENT ---
 analyst = LlmAgent(
     name="analyst",
-    model=model,
+    model=openai_model,
     description="Executes tools to find and analyze apartments.",
     instruction=instructions.ANALYST_PROMPT,
     tools=[FunctionTool(tools.fetch_apartments), FunctionTool(tools.check_commutes)],
@@ -28,7 +34,7 @@ analyst = LlmAgent(
 # --- 2. THE REVIEWER AGENT ---
 reviewer = LlmAgent(
     name="reviewer",
-    model=model,
+    model=gemini_model,
     description="Checks neighborhood safety.",
     instruction=instructions.REVIEWER_PROMPT,
     tools=[google_search],
@@ -38,7 +44,7 @@ reviewer = LlmAgent(
 # --- 3. THE SUMMARIZER AGENT ---
 summarizer = LlmAgent(
     name="summarizer",
-    model=model,
+    model=openai_model,
     description="Compiles research into a final pitch.",
     instruction=instructions.SUMMARIZER_PROMPT
 )
@@ -56,7 +62,7 @@ research_team = SequentialAgent(
 root_agent = LlmAgent(
     name="manager",
     description="Conversational agent that gathers user requirements.",
-    model=model,
+    model=openai_model,
     instruction=instructions.MANAGER_PROMPT,
     tools=[FunctionTool(tools.store_requirements)],
     sub_agents=[research_team]
