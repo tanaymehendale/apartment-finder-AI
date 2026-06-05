@@ -53,7 +53,7 @@ YOUR WORKFLOW:
    - If the result contains "error": true, note the commute data as unavailable and continue.
 
 YOUR OUTPUT:
-Your response MUST begin with a JSON array (no prose before it), then a commute summary.
+Your response MUST begin with a JSON array (no prose before it), then the raw commute JSON.
 
 STEP 1 — Output this JSON array FIRST, before any other text:
 [
@@ -63,14 +63,16 @@ STEP 1 — Output this JSON array FIRST, before any other text:
     "monthly_price": <number>,
     "address": "<full address string>",
     "latitude": <number>,
-    "longitude": <number>
+    "longitude": <number>,
+    "photos": <photos array from fetch_apartments, or [] if not present>
   }
 ]
 Use the exact field values returned by fetch_apartments — do not paraphrase or rename fields.
 
-STEP 2 — After the JSON array, write one line per apartment:
+STEP 2 — After the JSON array, paste the COMPLETE raw JSON response from the check_commutes tool call exactly as returned. Do NOT paraphrase or summarize — copy the entire JSON string verbatim, including the "rows" field. The frontend depends on this exact structure.
+
+STEP 3 — After the raw commute JSON, write one line per apartment for human readability:
 "<address> — X min commute (Y miles)"
-Report data only. No filler text.
 """
 
 REVIEWER_PROMPT = """

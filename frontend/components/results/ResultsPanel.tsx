@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import dynamic from "next/dynamic";
-import type { Apartment } from "@/lib/types";
+import type { Apartment, LandmarkInfo } from "@/lib/types";
 import { ApartmentCard } from "./ApartmentCard";
 
 const MapView = dynamic(() => import("@/components/map/MapView").then((m) => ({ default: m.MapView })), {
@@ -15,10 +15,11 @@ const MapView = dynamic(() => import("@/components/map/MapView").then((m) => ({ 
 
 interface Props {
   apartments: Apartment[];
+  landmark?: LandmarkInfo | null;
 }
 
-export function ResultsPanel({ apartments }: Props) {
-  const [activeTab, setActiveTab] = useState<"cards" | "map">("cards");
+export function ResultsPanel({ apartments, landmark }: Props) {
+  const [activeTab, setActiveTab] = useState<"cards" | "map">("map");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const hasResults = apartments.length > 0;
 
@@ -89,6 +90,7 @@ export function ResultsPanel({ apartments }: Props) {
               apartments={apartments}
               highlightedId={hoveredId}
               onHighlight={setHoveredId}
+              landmark={landmark}
             />
           </div>
         )}

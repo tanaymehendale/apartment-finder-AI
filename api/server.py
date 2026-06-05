@@ -3,12 +3,14 @@ FastAPI server — exposes the ADK apartment finder agent over HTTP with SSE str
 """
 import json
 import os
+import polyline as polyline_codec
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from api import session_manager
+from apartment_finder.tools import _get_gmaps_client
 
 load_dotenv()
 
@@ -48,12 +50,40 @@ async def chat(session_id: str, body: ChatRequest):
     )
 
 
+@app.post("/api/chat/{session_id}/cancel")
+async def cancel_chat(session_id: str):
+    cancelled = session_manager.cancel_session(session_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"cancelled": True}
+
+
 @app.get("/api/sessions/{session_id}/state")
 async def get_state(session_id: str):
     state = await session_manager.get_session_state(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found or empty state")
     return state
+
+
+@app.get("/api/directions")
+async def get_directions(
+    origin: str = Query(..., description="lat,lng of origin"),
+    destination: str = Query(..., description="lat,lng of destination"),
+    mode: str = Query("driving", description="driving|transit|walking"),
+):
+    try:
+        client = _get_gmaps_client()
+        routes = client.directions(origin, destination, mode=mode)
+        if not routes:
+            raise HTTPException(status_code=404, detail="No route found")
+        encoded = routes[0]["overview_polyline"]["points"]
+        points = polyline_codec.decode(encoded)  # returns [(lat, lng), ...]
+        return {"points": [[lat, lng] for lat, lng in points]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/health")

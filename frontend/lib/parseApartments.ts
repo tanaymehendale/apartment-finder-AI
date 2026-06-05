@@ -11,6 +11,7 @@ interface RawApartment {
   bathrooms?: number;
   square_feet?: number;
   data_warning?: string;
+  photos?: string[];
 }
 
 interface CommuteRow {
@@ -24,6 +25,39 @@ interface CommuteRow {
 interface RawCommuteData {
   rows?: CommuteRow[];
   status?: string;
+}
+
+/**
+ * Finds all top-level JSON blocks delimited by openChar/closeChar,
+ * correctly skipping over string literals so nested brackets don't confuse the count.
+ */
+function findTopLevelJsonBlocks(text: string, openChar: string, closeChar: string): string[] {
+  const results: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\" && inString) { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+
+    if (ch === openChar) {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === closeChar) {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        results.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return results;
 }
 
 function parseCommuteData(commuteJson: string): CommuteInfo[] {
@@ -51,9 +85,9 @@ export function parseAnalystDossier(dossier: string): {
 
   const apartments: Apartment[] = [];
 
-  // Try to extract JSON arrays from the dossier text (Analyst writes prose + JSON)
-  const jsonMatches = dossier.match(/\[[\s\S]*?\]/g) ?? [];
-  for (const raw of jsonMatches) {
+  // Find all top-level JSON arrays using bracket-counting (handles nested brackets and string literals)
+  const arrayBlocks = findTopLevelJsonBlocks(dossier, "[", "]");
+  for (const raw of arrayBlocks) {
     try {
       const items: RawApartment[] = JSON.parse(raw);
       if (Array.isArray(items) && items.length > 0 && items[0]?.address) {
@@ -70,6 +104,7 @@ export function parseAnalystDossier(dossier: string): {
               bathrooms: item.bathrooms,
               square_feet: item.square_feet,
               data_warning: item.data_warning,
+              photos: Array.isArray(item.photos) ? item.photos : undefined,
             });
           }
         }
@@ -80,12 +115,34 @@ export function parseAnalystDossier(dossier: string): {
     }
   }
 
-  // Attach commute data from dossier
-  const commuteMatch = dossier.match(/"rows"\s*:\s*\[[\s\S]*?\]/);
-  if (commuteMatch) {
-    const commutes = parseCommuteData(`{${commuteMatch[0]}}`);
-    commutes.forEach((c, i) => {
-      if (apartments[i]) apartments[i].commute = c;
+  // Attach commute data — find the top-level JSON object that contains a "rows" field
+  // Use bracket-counting for objects too so nested arrays in rows don't truncate the match
+  const objectBlocks = findTopLevelJsonBlocks(dossier, "{", "}");
+  let commuteAttached = false;
+  for (const block of objectBlocks) {
+    if (!block.includes('"rows"')) continue;
+    const commutes = parseCommuteData(block);
+    if (commutes.length > 0) {
+      commutes.forEach((c, i) => {
+        if (apartments[i]) apartments[i].commute = c;
+      });
+      commuteAttached = true;
+      break;
+    }
+  }
+
+  if (!commuteAttached) {
+    // Fallback: parse text lines like "123 Main St — 25 min commute (15 miles)"
+    const textLines = dossier.match(/—\s*(\d+)\s*min(?:ute)?s?\s+commute\s*\(([^)]+)\)/gi) ?? [];
+    textLines.forEach((line, i) => {
+      const m = line.match(/(\d+)\s*min(?:ute)?s?\s+commute\s*\(([^)]+)\)/i);
+      if (m && apartments[i]) {
+        apartments[i].commute = {
+          duration_text: `${m[1]} mins`,
+          distance_text: m[2].trim(),
+          duration_seconds: parseInt(m[1], 10) * 60,
+        };
+      }
     });
   }
 
@@ -95,8 +152,7 @@ export function parseAnalystDossier(dossier: string): {
 export function mergeSafetyReport(apartments: Apartment[], safetyReport: string): Apartment[] {
   if (!safetyReport || apartments.length === 0) return apartments;
 
-  return apartments.map((apt, i) => {
-    // Try to extract the safety note for this apartment from the report
+  return apartments.map((apt) => {
     const lines = safetyReport.split("\n");
     const aptLine = lines.findIndex(
       (l) => l.toLowerCase().includes(apt.address.split(",")[0].toLowerCase())

@@ -48,6 +48,7 @@ def _normalize(listing: dict, city: str, state: str) -> dict:
     baths = listing.get("bathrooms") or 0
     price = listing.get("price") or listing.get("monthly_price") or 0
     bed_str = "Studio" if int(beds) == 0 else f"{int(beds)} Bed"
+    photos = listing.get("photos") or []
     return {
         "id": listing.get("id") or listing.get("zpid"),
         "agent_description": f"{bed_str}, {int(baths)} Bath in {city}, {state} at ${price:.0f}/mo",
@@ -55,6 +56,7 @@ def _normalize(listing: dict, city: str, state: str) -> dict:
         "address": listing.get("formattedAddress") or listing.get("address"),
         "latitude": listing.get("latitude"),
         "longitude": listing.get("longitude"),
+        "photos": photos,
     }
 
 
@@ -152,6 +154,16 @@ def _fetch_apify(city: str, state: str, max_budget: float) -> list[dict] | None:
     results = []
     for l in listings[:safe_max_items]:
         addr = l.get("address")
+        # Extract first available photo URL from Zillow response
+        photos = []
+        img_src = l.get("imgSrc") or l.get("image")
+        if img_src:
+            photos = [img_src]
+        elif isinstance(l.get("carouselPhotos"), list) and l["carouselPhotos"]:
+            first = l["carouselPhotos"][0]
+            url = first.get("url") or first.get("src") if isinstance(first, dict) else first
+            if url:
+                photos = [url]
         raw = {
             "id": l.get("zpid"),
             "price": l.get("price"),
@@ -160,6 +172,7 @@ def _fetch_apify(city: str, state: str, max_budget: float) -> list[dict] | None:
             "longitude": l.get("longitude"),
             "bedrooms": l.get("bedrooms"),
             "bathrooms": l.get("bathrooms"),
+            "photos": photos,
         }
         results.append(_normalize(raw, city, state))
     return results
@@ -260,6 +273,20 @@ def store_requirements(
         "budget": budget,
         "landmark": landmark,
     })
+
+    # Geocode the landmark so the frontend can place a pin on the map
+    try:
+        client = _get_gmaps_client()
+        geo_results = client.geocode(f"{landmark}, {city}, {state}")
+        if geo_results:
+            loc = geo_results[0]["geometry"]["location"]
+            tool_context.state["landmark_lat"] = loc["lat"]
+            tool_context.state["landmark_lng"] = loc["lng"]
+            tool_context.state["landmark_name"] = landmark
+            print(f"   📍 Landmark geocoded: {landmark} → {loc['lat']:.4f}, {loc['lng']:.4f}")
+    except Exception as e:
+        print(f"   ⚠️  Landmark geocoding failed: {e}")
+
     return "Requirements saved. Proceeding to research."
 
 

@@ -2,23 +2,35 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { createSession, chatStream } from "@/lib/api";
 import { parseAnalystDossier, mergeSafetyReport } from "@/lib/parseApartments";
-import type { ChatMessage, AgentStatusEvent, AgentName, Apartment, SSEEvent } from "@/lib/types";
+import type { ChatMessage, AgentStatusEvent, AgentName, Apartment, LandmarkInfo, SSEEvent } from "@/lib/types";
 
 function uid() {
   return Math.random().toString(36).slice(2);
 }
 
-// Tokens from these agents are intermediate and not shown to the user
 const INTERMEDIATE_AGENTS = new Set(["analyst", "reviewer", "ResearchTeam", "Research Team"]);
+
+function buildSessionTitle(userRequirementsJson: string): string | null {
+  try {
+    const r = JSON.parse(userRequirementsJson);
+    if (r.city && r.state && r.budget) {
+      return `Apartments in ${r.city}, ${r.state} < $${Number(r.budget).toLocaleString()}`;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agentStatus, setAgentStatus] = useState<AgentStatusEvent | null>(null);
   const [apartments, setApartments] = useState<Apartment[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [landmark, setLandmark] = useState<LandmarkInfo | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  // Persist messages to localStorage whenever they change (keyed by session ID)
   useEffect(() => {
     const id = sessionIdRef.current;
     if (!id || messages.length === 0) return;
@@ -32,7 +44,6 @@ export function useChat() {
     }
   }, [messages]);
 
-  // Persist apartments alongside messages so restoreSession can reload them
   useEffect(() => {
     const id = sessionIdRef.current;
     if (!id || apartments.length === 0) return;
@@ -43,10 +54,32 @@ export function useChat() {
     }
   }, [apartments]);
 
+  useEffect(() => {
+    const id = sessionIdRef.current;
+    if (!id || !landmark) return;
+    try {
+      localStorage.setItem(`apt_landmark_${id}`, JSON.stringify(landmark));
+    } catch {
+      // ignore
+    }
+  }, [landmark]);
+
+  const stopStreaming = useCallback(async () => {
+    abortRef.current?.abort();
+    setIsStreaming(false);
+    setAgentStatus(null);
+    if (sessionIdRef.current) {
+      try {
+        await fetch(`/api/chat/${sessionIdRef.current}/cancel`, { method: "POST" });
+      } catch {
+        // best-effort
+      }
+    }
+  }, []);
+
   const sendMessage = useCallback(async (userText: string) => {
     if (isStreaming || !userText.trim()) return;
 
-    // Add user message
     const userMsg: ChatMessage = {
       id: uid(),
       role: "user",
@@ -57,11 +90,9 @@ export function useChat() {
     setIsStreaming(true);
     setAgentStatus(null);
 
-    // Create session on first message
     if (!sessionIdRef.current) {
       try {
         sessionIdRef.current = await createSession();
-        // Persist session metadata to localStorage for sidebar
         const sessions = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]");
         sessions.unshift({
           id: sessionIdRef.current,
@@ -75,27 +106,28 @@ export function useChat() {
       }
     }
 
-    // Placeholder assistant message
     const assistantMsgId = uid();
     setMessages((prev) => [
       ...prev,
       { id: assistantMsgId, role: "assistant", content: "", timestamp: new Date() },
     ]);
 
-    const stream = chatStream(sessionIdRef.current!, userText.trim());
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+
+    const stream = chatStream(sessionIdRef.current!, userText.trim(), abortController.signal);
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let analystDossier = "";
     let safetyReport = "";
     let receivedContent = false;
-    // Track which bubble each agent's tokens go into so Manager and Summarizer
-    // appear as separate messages rather than being concatenated into one.
     let currentBubbleId = assistantMsgId;
     let currentBubbleAuthor: string | null = null;
 
     try {
       while (true) {
+        if (abortController.signal.aborted) break;
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -120,14 +152,11 @@ export function useChat() {
           } else if (event.type === "waiting") {
             setAgentStatus({ agent: event.agent as AgentName, step: "waiting" });
           } else if (event.type === "token") {
-            // Show tokens from any agent except known intermediate ones.
-            // Using an exclusion list so unknown/empty authors also show through.
             const isIntermediate = INTERMEDIATE_AGENTS.has(event.author ?? "");
             if (!isIntermediate && event.content) {
               receivedContent = true;
               const tokenAuthor = event.author ?? "";
 
-              // New author → new bubble (first author re-uses the placeholder bubble)
               if (tokenAuthor !== currentBubbleAuthor) {
                 if (currentBubbleAuthor !== null) {
                   const newId = uid();
@@ -163,6 +192,27 @@ export function useChat() {
             const { apartments: parsed } = parseAnalystDossier(analystDossier);
             const withSafety = mergeSafetyReport(parsed, safetyReport);
             setApartments(withSafety);
+
+            // Extract landmark
+            if (event.landmark_lat != null && event.landmark_lng != null) {
+              setLandmark({
+                name: event.landmark_name ?? "",
+                lat: event.landmark_lat,
+                lng: event.landmark_lng,
+              });
+            }
+
+            // Update session title from user_requirements
+            if (event.user_requirements && sessionIdRef.current) {
+              const title = buildSessionTitle(event.user_requirements);
+              if (title) {
+                const sessions = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]");
+                const updated = sessions.map((s: { id: string; title: string; createdAt: string }) =>
+                  s.id === sessionIdRef.current ? { ...s, title } : s
+                );
+                localStorage.setItem("apt_sessions", JSON.stringify(updated));
+              }
+            }
           } else if (event.type === "done") {
             setAgentStatus(null);
           }
@@ -171,9 +221,8 @@ export function useChat() {
     } finally {
       setIsStreaming(false);
       setAgentStatus(null);
-      // If the stream ended without any content (silent pipeline failure), show a fallback
-      // so the user knows something went wrong rather than seeing a blank disappear.
-      if (!receivedContent) {
+      abortRef.current = null;
+      if (!receivedContent && !abortController.signal.aborted) {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === currentBubbleId
@@ -195,6 +244,7 @@ export function useChat() {
     setApartments([]);
     setAgentStatus(null);
     setIsStreaming(false);
+    setLandmark(null);
   }, []);
 
   const restoreSession = useCallback((sessionId: string) => {
@@ -223,6 +273,17 @@ export function useChat() {
       setApartments([]);
     }
 
+    const storedLandmark = localStorage.getItem(`apt_landmark_${sessionId}`);
+    if (storedLandmark) {
+      try {
+        setLandmark(JSON.parse(storedLandmark));
+      } catch {
+        setLandmark(null);
+      }
+    } else {
+      setLandmark(null);
+    }
+
     setAgentStatus(null);
     setIsStreaming(false);
   }, []);
@@ -232,7 +293,9 @@ export function useChat() {
     agentStatus,
     apartments,
     isStreaming,
+    landmark,
     sendMessage,
+    stopStreaming,
     resetSession,
     restoreSession,
     sessionId: sessionIdRef.current,

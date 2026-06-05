@@ -1,10 +1,10 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type { ConversationSession } from "@/lib/types";
 
 interface Props {
   isOpen: boolean;
-  onClose: () => void;
+  onToggle: () => void;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onNewSearch: () => void;
@@ -13,7 +13,7 @@ interface Props {
 
 export function ConversationSidebar({
   isOpen,
-  onClose,
+  onToggle,
   onSelectSession,
   onDeleteSession,
   onNewSearch,
@@ -21,18 +21,31 @@ export function ConversationSidebar({
 }: Props) {
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
 
-  useEffect(() => {
-    if (isOpen) {
-      const stored = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]");
-      setSessions(stored);
+  const loadSessions = useCallback(() => {
+    try {
+      setSessions(JSON.parse(localStorage.getItem("apt_sessions") ?? "[]"));
+    } catch {
+      setSessions([]);
     }
-  }, [isOpen]);
+  }, []);
+
+  useEffect(() => {
+    loadSessions();
+    // Refresh sessions list whenever storage changes (e.g. new session title written by useChat)
+    window.addEventListener("storage", loadSessions);
+    return () => window.removeEventListener("storage", loadSessions);
+  }, [loadSessions]);
+
+  // Poll for title updates from the same tab (storage events don't fire within same tab)
+  useEffect(() => {
+    const interval = setInterval(loadSessions, 3000);
+    return () => clearInterval(interval);
+  }, [loadSessions]);
 
   function formatDate(iso: string) {
     const d = new Date(iso);
     const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    const diffMin = Math.floor(diffMs / 60000);
+    const diffMin = Math.floor((now.getTime() - d.getTime()) / 60000);
     if (diffMin < 1) return "Just now";
     if (diffMin < 60) return `${diffMin}m ago`;
     if (diffMin < 1440) return `${Math.floor(diffMin / 60)}h ago`;
@@ -41,137 +54,148 @@ export function ConversationSidebar({
 
   function deleteSession(sessionId: string, e: React.MouseEvent) {
     e.stopPropagation();
-
-    // Remove from session index
     const updated = sessions.filter((s) => s.id !== sessionId);
     setSessions(updated);
     localStorage.setItem("apt_sessions", JSON.stringify(updated));
-
-    // Remove the stored messages for this session
     localStorage.removeItem(`apt_messages_${sessionId}`);
-
-    // Notify parent if the active session was deleted
+    localStorage.removeItem(`apt_apartments_${sessionId}`);
+    localStorage.removeItem(`apt_landmark_${sessionId}`);
     onDeleteSession(sessionId);
   }
 
   function clearAll() {
-    sessions.forEach((s) => localStorage.removeItem(`apt_messages_${s.id}`));
+    sessions.forEach((s) => {
+      localStorage.removeItem(`apt_messages_${s.id}`);
+      localStorage.removeItem(`apt_apartments_${s.id}`);
+      localStorage.removeItem(`apt_landmark_${s.id}`);
+    });
     localStorage.removeItem("apt_sessions");
     setSessions([]);
-    // If any session was active, reset it
     if (currentSessionId) onDeleteSession(currentSessionId);
   }
 
   return (
-    <>
-      {/* Backdrop */}
+    <div
+      className={[
+        "flex-shrink-0 flex flex-col h-full bg-gray-900 text-white overflow-hidden",
+        "transition-all duration-300 ease-in-out",
+        isOpen ? "w-60" : "w-12",
+      ].join(" ")}
+    >
+      {/* Top bar — logo + toggle */}
+      <div className={["flex items-center h-14 border-b border-white/10 flex-shrink-0", isOpen ? "px-4 gap-3" : "justify-center px-0"].join(" ")}>
+        <button
+          onClick={onToggle}
+          className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors flex-shrink-0"
+          title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
+        >
+          <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+          </svg>
+        </button>
+        {isOpen && (
+          <span className="text-sm font-semibold text-white truncate">ApartmentFinder AI</span>
+        )}
+      </div>
+
       {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40 lg:hidden"
-          onClick={onClose}
-        />
+        <>
+          {/* New search button */}
+          <div className="px-3 py-3 flex-shrink-0">
+            <button
+              onClick={onNewSearch}
+              className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-white bg-white/10 hover:bg-white/20 rounded-xl transition-colors"
+            >
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New search
+            </button>
+          </div>
+
+          {/* Sessions label */}
+          {sessions.length > 0 && (
+            <p className="px-4 pb-1 text-[10px] font-semibold text-gray-500 uppercase tracking-widest flex-shrink-0">
+              Recent
+            </p>
+          )}
+
+          {/* Session list */}
+          <div className="flex-1 overflow-y-auto">
+            {sessions.length === 0 ? (
+              <div className="px-4 py-8 text-center">
+                <p className="text-xs text-gray-500">No past searches yet</p>
+              </div>
+            ) : (
+              <div className="pb-2">
+                {sessions.map((session) => {
+                  const isActive = currentSessionId === session.id;
+                  return (
+                    <div
+                      key={session.id}
+                      className={[
+                        "group flex items-center px-2 py-0.5 mx-2 rounded-lg transition-colors cursor-pointer",
+                        isActive ? "bg-white/10" : "hover:bg-white/5",
+                      ].join(" ")}
+                    >
+                      <button
+                        onClick={() => onSelectSession(session.id)}
+                        className="flex flex-col flex-1 min-w-0 text-left py-2 px-1"
+                      >
+                        <span className={[
+                          "text-xs font-medium truncate block leading-tight",
+                          isActive ? "text-white" : "text-gray-300",
+                        ].join(" ")}>
+                          {session.title}
+                        </span>
+                        <span className="text-[10px] text-gray-500 mt-0.5">
+                          {formatDate(session.createdAt)}
+                        </span>
+                      </button>
+                      <button
+                        onClick={(e) => deleteSession(session.id, e)}
+                        title="Delete"
+                        className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:text-red-400 text-gray-500 transition-all"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          {sessions.length > 0 && (
+            <div className="px-3 py-3 border-t border-white/10 flex-shrink-0">
+              <button
+                onClick={clearAll}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-500 hover:text-red-400 hover:bg-white/5 rounded-lg transition-colors"
+              >
+                Clear all history
+              </button>
+            </div>
+          )}
+        </>
       )}
 
-      {/* Sidebar panel */}
-      <div
-        className={`
-          fixed left-0 top-0 bottom-0 w-72 bg-white border-r border-gray-100 z-50 flex flex-col shadow-xl
-          transition-transform duration-300 ease-out
-          ${isOpen ? "translate-x-0" : "-translate-x-full"}
-        `}
-      >
-        <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Search history</h2>
+      {/* Collapsed state — just show new search icon */}
+      {!isOpen && (
+        <div className="flex flex-col items-center pt-3 gap-2">
           <button
-            onClick={onClose}
-            className="w-7 h-7 rounded-lg hover:bg-gray-100 flex items-center justify-center transition-colors"
-          >
-            <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* New search button */}
-        <div className="px-3 py-3 border-b border-gray-50">
-          <button
-            onClick={() => { onNewSearch(); onClose(); }}
-            className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-white bg-primary hover:bg-primary-700 rounded-xl transition-colors shadow-sm"
+            onClick={onNewSearch}
+            className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            title="New search"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            New search
           </button>
         </div>
-
-        {/* Session list */}
-        <div className="flex-1 overflow-y-auto py-2">
-          {sessions.length === 0 ? (
-            <div className="px-4 py-8 text-center">
-              <p className="text-xs text-gray-400">No past searches yet</p>
-            </div>
-          ) : (
-            sessions.map((session) => {
-              const isActive = currentSessionId === session.id;
-              return (
-                <div
-                  key={session.id}
-                  className={`group flex items-center px-3 py-2.5 hover:bg-gray-50 transition-colors ${
-                    isActive ? "bg-primary-50" : ""
-                  }`}
-                >
-                  {/* Select area */}
-                  <button
-                    onClick={() => { onSelectSession(session.id); onClose(); }}
-                    className="flex items-start gap-2 flex-1 min-w-0 text-left"
-                  >
-                    <div className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                      isActive ? "bg-primary" : "bg-gray-300 group-hover:bg-gray-400"
-                    }`} />
-                    <div className="min-w-0 flex-1">
-                      <p className={`text-xs font-medium truncate ${
-                        isActive ? "text-primary" : "text-gray-700"
-                      }`}>
-                        {session.title}
-                      </p>
-                      <p className="text-[10px] text-gray-400 mt-0.5">
-                        {formatDate(session.createdAt)}
-                      </p>
-                    </div>
-                  </button>
-
-                  {/* Delete button — visible on hover */}
-                  <button
-                    onClick={(e) => deleteSession(session.id, e)}
-                    title="Delete this search"
-                    className="ml-1 flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-500 text-gray-400 transition-all"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Footer — clear all */}
-        {sessions.length > 0 && (
-          <div className="px-3 py-3 border-t border-gray-100">
-            <button
-              onClick={clearAll}
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-              Clear all history
-            </button>
-          </div>
-        )}
-      </div>
-    </>
+      )}
+    </div>
   );
 }

@@ -11,12 +11,19 @@ export interface Apartment {
   data_warning?: string;
   commute?: CommuteInfo;
   safety_summary?: string;
+  photos?: string[];
 }
 
 export interface CommuteInfo {
   duration_text: string;
   distance_text: string;
   duration_seconds: number;
+}
+
+export interface LandmarkInfo {
+  name: string;
+  lat: number;
+  lng: number;
 }
 
 export type AgentName = "Manager" | "Analyst" | "Reviewer" | "Summarizer" | "Research Team";
@@ -43,6 +50,14 @@ export type SSEEvent =
   | { type: "token"; content: string; author: string }
   | { type: "status"; agent: AgentName; step: string }
   | { type: "waiting"; seconds: number; agent: string }
-  | { type: "state"; analyst_dossier: string; safety_report: string }
+  | {
+      type: "state";
+      analyst_dossier: string;
+      safety_report: string;
+      user_requirements: string;
+      landmark_lat?: number;
+      landmark_lng?: number;
+      landmark_name?: string;
+    }
   | { type: "done" }
   | { type: "error"; content: string };

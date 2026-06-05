@@ -13,6 +13,9 @@ from apartment_finder.agent import root_agent
 # In-memory registry: session_id → (runner, adk_session_id, user_id)
 _sessions: dict[str, tuple[InMemoryRunner, str, str]] = {}
 
+# Cancel flags: session_id → bool
+_cancel_flags: dict[str, bool] = {}
+
 MAX_RETRIES = 3
 
 AGENT_LABELS = {
@@ -33,7 +36,16 @@ async def create_session() -> str:
         user_id=session_id,
     )
     _sessions[session_id] = (runner, adk_session.id, session_id)
+    _cancel_flags[session_id] = False
     return session_id
+
+
+def cancel_session(session_id: str) -> bool:
+    """Signal the streaming loop for session_id to stop. Returns True if session exists."""
+    if session_id in _cancel_flags:
+        _cancel_flags[session_id] = True
+        return True
+    return False
 
 
 async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, None]:
@@ -61,6 +73,8 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
 
     last_active_agent = "Manager"
 
+    _cancel_flags[session_id] = False  # reset on each new message
+
     for attempt in range(MAX_RETRIES):
         seen_authors: set[str] = set()
 
@@ -70,6 +84,10 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
                 session_id=adk_session_id,
                 new_message=new_message,
             ):
+                if _cancel_flags.get(session_id):
+                    yield {"type": "done"}
+                    return
+
                 author = getattr(event, "author", None) or ""
 
                 # Emit a status event the first time we see each sub-agent
@@ -146,6 +164,10 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
             "type": "state",
             "analyst_dossier": state.get("analyst_dossier", ""),
             "safety_report": state.get("safety_report", ""),
+            "user_requirements": state.get("user_requirements", ""),
+            "landmark_lat": state.get("landmark_lat"),
+            "landmark_lng": state.get("landmark_lng"),
+            "landmark_name": state.get("landmark_name", ""),
         }
     except Exception:
         pass

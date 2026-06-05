@@ -16,8 +16,11 @@ export async function fetchSessionState(sessionId: string): Promise<Record<strin
 export function chatStream(
   sessionId: string,
   message: string,
+  signal?: AbortSignal,
 ): ReadableStream<Uint8Array> {
   const controller = new AbortController();
+  // Forward external abort signal into the internal controller
+  signal?.addEventListener("abort", () => controller.abort());
 
   return new ReadableStream({
     async start(streamController) {
