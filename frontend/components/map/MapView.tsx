@@ -12,9 +12,9 @@ L.Icon.Default.mergeOptions({
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-const RANK_LABELS = ["Best Pick", "Runner-up", "Budget Pick"];
-const RANK_COLORS = ["#1A56DB", "#374151", "#0EA5E9"];
-const RANK_BG = ["#1A56DB", "#374151", "#0EA5E9"];
+const RANK_LABELS = ["Best Pick", "Runner-up", "3rd Choice", "4th Choice", "5th Choice"];
+const RANK_COLORS = ["#1A56DB", "#374151", "#0EA5E9", "#6B7280", "#9CA3AF"];
+const RANK_BG = ["#1A56DB", "#374151", "#0EA5E9", "#6B7280", "#9CA3AF"];
 
 function makeAptIcon(index: number, highlighted: boolean) {
   const color = highlighted ? RANK_BG[index] ?? "#1A56DB" : "#6B7280";

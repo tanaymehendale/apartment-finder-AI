@@ -10,7 +10,9 @@ interface RawApartment {
   bedrooms?: number;
   bathrooms?: number;
   square_feet?: number;
-  data_warning?: string;
+  listing_url?: string;
+  listing_source?: string;
+  over_budget?: boolean;
   photos?: string[];
 }
 
@@ -103,7 +105,9 @@ export function parseAnalystDossier(dossier: string): {
               bedrooms: item.bedrooms,
               bathrooms: item.bathrooms,
               square_feet: item.square_feet,
-              data_warning: item.data_warning,
+              listing_url: item.listing_url,
+              listing_source: item.listing_source,
+              over_budget: item.over_budget,
               photos: Array.isArray(item.photos) ? item.photos : undefined,
             });
           }
@@ -147,6 +151,53 @@ export function parseAnalystDossier(dossier: string): {
   }
 
   return { apartments };
+}
+
+/**
+ * Hidden marker the Summarizer appends with its reasoned best→worst ranking, e.g.
+ *   <!--RANKING:["123","456"]-->
+ * react-markdown drops HTML comments, but we also strip it from displayed text.
+ */
+export const RANKING_MARKER_RE = /<!--\s*RANKING\s*:\s*(\[[^\]]*\])\s*-->/i;
+
+/** Extract the ranked list of apartment ids from the Summarizer's output, or null. */
+export function parseRanking(text: string): string[] | null {
+  if (!text) return null;
+  const m = text.match(RANKING_MARKER_RE);
+  if (!m) return null;
+  try {
+    const arr = JSON.parse(m[1]);
+    return Array.isArray(arr) ? arr.map(String) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Remove the hidden RANKING marker (and anything after it) from user-facing text. */
+export function stripRankingMarker(text: string): string {
+  const i = text.search(/<!--\s*RANKING/i);
+  return i === -1 ? text : text.slice(0, i).trimEnd();
+}
+
+/**
+ * Reorder apartments to follow the Summarizer's ranking (matched by id, best first).
+ * Any apartment not named in the ranking is appended in its original order.
+ */
+export function applyRanking(apartments: Apartment[], ranking: string[] | null): Apartment[] {
+  if (!ranking || ranking.length === 0 || apartments.length === 0) return apartments;
+  const byId = new Map(apartments.map((a) => [String(a.id), a]));
+  const ordered: Apartment[] = [];
+  for (const id of ranking) {
+    const a = byId.get(String(id));
+    if (a) {
+      ordered.push(a);
+      byId.delete(String(id));
+    }
+  }
+  for (const a of apartments) {
+    if (byId.has(String(a.id))) ordered.push(a);
+  }
+  return ordered;
 }
 
 export function mergeSafetyReport(apartments: Apartment[], safetyReport: string): Apartment[] {

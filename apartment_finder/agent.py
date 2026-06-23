@@ -46,7 +46,8 @@ summarizer = LlmAgent(
     name="summarizer",
     model=openai_model,
     description="Compiles research into a final pitch.",
-    instruction=instructions.SUMMARIZER_PROMPT
+    instruction=instructions.SUMMARIZER_PROMPT,
+    output_key="final_recommendation",
 )
 
 # --- THE RESEARCH TEAM ---

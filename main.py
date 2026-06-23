@@ -17,8 +17,9 @@ async def main():
         return
 
     if not os.getenv("RENTCAST_API_KEY") and not os.getenv("APIFY_API_KEY"):
-        print("⚠️  No listing API keys found (RENTCAST_API_KEY / APIFY_API_KEY).")
-        print("   Falling back to local CSV — run preprocessing.py first if not done.")
+        print("❌ ERROR: No listing provider key found (RENTCAST_API_KEY / APIFY_API_KEY).")
+        print("   At least one is required — there is no offline fallback. Add one to .env and restart.")
+        return
 
     # Initialize runner with an explicit app_name so session_service can manage sessions
     runner = InMemoryRunner(agent=root_agent, app_name="apartment_finder")

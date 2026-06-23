@@ -13,10 +13,25 @@ export async function fetchSessionState(sessionId: string): Promise<Record<strin
   return res.json();
 }
 
+// F3: structured-intake payload built by the RequirementCards UI (P2-5).
+export interface RequirementsPayload {
+  city: string;
+  state: string;
+  budget: number;
+  landmark: string;
+  min_bedrooms?: number;
+  min_bathrooms?: number;
+  roommates?: number;
+  budget_is_per_person?: boolean;
+  areas?: { city: string; state: string }[];
+  proximity?: { label: string; kind: "named" | "category" }[];
+}
+
 export function chatStream(
   sessionId: string,
   message: string,
   signal?: AbortSignal,
+  requirements?: RequirementsPayload,
 ): ReadableStream<Uint8Array> {
   const controller = new AbortController();
   // Forward external abort signal into the internal controller
@@ -28,7 +43,7 @@ export function chatStream(
         const res = await fetch(`${BASE}/chat/${sessionId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message }),
+          body: JSON.stringify(requirements ? { message, requirements } : { message }),
           signal: controller.signal,
         });
 

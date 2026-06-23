@@ -8,7 +8,9 @@ export interface Apartment {
   bedrooms?: number;
   bathrooms?: number;
   square_feet?: number;
-  data_warning?: string;
+  listing_url?: string;
+  listing_source?: string;
+  over_budget?: boolean;
   commute?: CommuteInfo;
   safety_summary?: string;
   photos?: string[];
@@ -55,6 +57,7 @@ export type SSEEvent =
       analyst_dossier: string;
       safety_report: string;
       user_requirements: string;
+      final_recommendation?: string;
       landmark_lat?: number;
       landmark_lng?: number;
       landmark_name?: string;

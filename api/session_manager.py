@@ -7,8 +7,10 @@ import re
 import uuid
 from typing import AsyncGenerator
 from google.adk.runners import InMemoryRunner
+from google.adk.events import Event, EventActions
 from google.genai import types
 from apartment_finder.agent import root_agent
+from apartment_finder.tools import _compute_requirements
 
 # In-memory registry: session_id → (runner, adk_session_id, user_id)
 _sessions: dict[str, tuple[InMemoryRunner, str, str]] = {}
@@ -48,9 +50,18 @@ def cancel_session(session_id: str) -> bool:
     return False
 
 
-async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, None]:
+async def stream_message(
+    session_id: str,
+    message: str,
+    requirements: dict | None = None,
+) -> AsyncGenerator[dict, None]:
     """
     Send a message to an existing session and yield SSE event dicts.
+
+    If `requirements` (F3 structured-intake payload) is provided, session state is
+    pre-seeded deterministically via `_seed_requirements` and the Manager is told
+    to skip intake and delegate straight to the ResearchTeam.
+
     Yields:
       {"type": "status",  "agent": str, "step": str}
       {"type": "token",   "content": str, "author": str}
@@ -66,9 +77,35 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
 
     runner, adk_session_id, user_id = _sessions[session_id]
 
+    message_text = message
+    if requirements:
+        # Pre-seed state deterministically (no LLM parse). get_session returns a copy,
+        # so persist the computed delta via an event state_delta rather than mutating.
+        computed = _compute_requirements(**requirements)
+        if computed.get("error"):
+            yield {"type": "error", "content": computed["message"]}
+            yield {"type": "done"}
+            return
+        adk_session = await runner.session_service.get_session(
+            app_name="apartment_finder",
+            user_id=user_id,
+            session_id=adk_session_id,
+        )
+        await runner.session_service.append_event(
+            adk_session,
+            Event(author="user", actions=EventActions(state_delta=computed["delta"])),
+        )
+        message_text = (
+            "[STRUCTURED_INTAKE] The user's housing requirements have already been "
+            "collected and saved to session state "
+            f"(city={requirements.get('city')}, state={requirements.get('state')}, "
+            f"budget={requirements.get('budget')}, landmark={requirements.get('landmark')}). "
+            "Do NOT call store_requirements. Delegate to the ResearchTeam immediately."
+        )
+
     new_message = types.Content(
         role="user",
-        parts=[types.Part(text=message)],
+        parts=[types.Part(text=message_text)],
     )
 
     last_active_agent = "Manager"
@@ -165,6 +202,7 @@ async def stream_message(session_id: str, message: str) -> AsyncGenerator[dict, 
             "analyst_dossier": state.get("analyst_dossier", ""),
             "safety_report": state.get("safety_report", ""),
             "user_requirements": state.get("user_requirements", ""),
+            "final_recommendation": state.get("final_recommendation", ""),
             "landmark_lat": state.get("landmark_lat"),
             "landmark_lng": state.get("landmark_lng"),
             "landmark_name": state.get("landmark_name", ""),

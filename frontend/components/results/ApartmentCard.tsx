@@ -9,11 +9,13 @@ interface Props {
   onHover: (id: string | null) => void;
 }
 
-const RANK_LABELS = ["Top Pick", "Runner-up", "Budget Pick"];
+const RANK_LABELS = ["Top Pick", "Runner-up", "3rd Choice", "4th Choice", "5th Choice"];
 const RANK_COLORS = [
   "bg-primary text-white",
   "bg-gray-700 text-white",
   "bg-accent text-white",
+  "bg-gray-500 text-white",
+  "bg-gray-400 text-white",
 ];
 
 export function ApartmentCard({ apartment, index, isHighlighted, onHover }: Props) {
@@ -32,10 +34,17 @@ export function ApartmentCard({ apartment, index, isHighlighted, onHover }: Prop
         }
       `}
     >
-      {/* Rank badge */}
-      <span className={`absolute top-3 right-3 text-[10px] font-semibold px-2 py-0.5 rounded-full ${rankColor}`}>
-        {rankLabel}
-      </span>
+      {/* Rank + over-budget badges */}
+      <div className="absolute top-3 right-3 flex items-center gap-1">
+        {apartment.over_budget && (
+          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+            Over budget
+          </span>
+        )}
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${rankColor}`}>
+          {rankLabel}
+        </span>
+      </div>
 
       {/* Price */}
       <div className="mb-2">
@@ -77,16 +86,6 @@ export function ApartmentCard({ apartment, index, isHighlighted, onHover }: Prop
       {apartment.safety_summary && (
         <p className="mt-2.5 text-xs text-muted leading-relaxed border-t border-gray-50 pt-2.5">
           {apartment.safety_summary}
-        </p>
-      )}
-
-      {/* Stale data warning */}
-      {apartment.data_warning && (
-        <p className="mt-1.5 text-[10px] text-amber-600 flex items-center gap-1">
-          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-          </svg>
-          Data may be stale
         </p>
       )}
     </div>

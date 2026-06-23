@@ -26,6 +26,9 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
+    # F3: optional structured-intake payload. When present, the bridge pre-seeds
+    # session state deterministically (no LLM free-text parse of these fields).
+    requirements: dict | None = None
 
 
 @app.post("/api/sessions")
@@ -37,7 +40,9 @@ async def create_session():
 @app.post("/api/chat/{session_id}")
 async def chat(session_id: str, body: ChatRequest):
     async def event_stream():
-        async for event in session_manager.stream_message(session_id, body.message):
+        async for event in session_manager.stream_message(
+            session_id, body.message, requirements=body.requirements
+        ):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
@@ -89,12 +94,16 @@ async def get_directions(
 @app.get("/api/health")
 async def health():
     missing = [k for k in ["GOOGLE_API_KEY", "GOOGLE_MAPS_API_KEY"] if not os.getenv(k)]
+    # P1-1: no offline CSV fallback — at least one listing provider key is required.
+    provider = (
+        "rentcast" if os.getenv("RENTCAST_API_KEY")
+        else "apify" if os.getenv("APIFY_API_KEY")
+        else None
+    )
+    if provider is None:
+        missing.append("RENTCAST_API_KEY|APIFY_API_KEY")
     return {
         "status": "ok" if not missing else "degraded",
         "missing_keys": missing,
-        "listing_provider": (
-            "rentcast" if os.getenv("RENTCAST_API_KEY")
-            else "apify" if os.getenv("APIFY_API_KEY")
-            else "local_csv"
-        ),
+        "listing_provider": provider,
     }

@@ -1,7 +1,7 @@
 "use client";
 import { useState, useCallback, useRef, useEffect } from "react";
 import { createSession, chatStream } from "@/lib/api";
-import { parseAnalystDossier, mergeSafetyReport } from "@/lib/parseApartments";
+import { parseAnalystDossier, mergeSafetyReport, parseRanking, applyRanking, stripRankingMarker } from "@/lib/parseApartments";
 import type { ChatMessage, AgentStatusEvent, AgentName, Apartment, LandmarkInfo, SSEEvent } from "@/lib/types";
 
 function uid() {
@@ -124,6 +124,7 @@ export function useChat() {
     let receivedContent = false;
     let currentBubbleId = assistantMsgId;
     let currentBubbleAuthor: string | null = null;
+    let currentRaw = ""; // unstripped accumulator for the current bubble (to hide the RANKING marker)
 
     try {
       while (true) {
@@ -167,13 +168,14 @@ export function useChat() {
                   ]);
                 }
                 currentBubbleAuthor = tokenAuthor;
+                currentRaw = "";
               }
 
+              currentRaw += event.content;
+              const display = stripRankingMarker(currentRaw);
               setMessages((prev) =>
                 prev.map((m) =>
-                  m.id === currentBubbleId
-                    ? { ...m, content: m.content + event.content }
-                    : m
+                  m.id === currentBubbleId ? { ...m, content: display } : m
                 )
               );
             }
@@ -191,7 +193,10 @@ export function useChat() {
             safetyReport = event.safety_report;
             const { apartments: parsed } = parseAnalystDossier(analystDossier);
             const withSafety = mergeSafetyReport(parsed, safetyReport);
-            setApartments(withSafety);
+            // Reorder cards/pins to follow the Summarizer's reasoned ranking (its
+            // hidden RANKING marker), so chat, cards, and map agree on the Top Pick.
+            const ranking = parseRanking(event.final_recommendation ?? "");
+            setApartments(applyRanking(withSafety, ranking));
 
             // Extract landmark
             if (event.landmark_lat != null && event.landmark_lng != null) {
