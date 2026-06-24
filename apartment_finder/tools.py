@@ -42,6 +42,7 @@ def _get_gmaps_client() -> googlemaps.Client:
 # Reused by P1-2 (landmark resolution) and, later, P2-4 (category proximity search).
 
 _PLACES_SEARCHTEXT_URL = "https://places.googleapis.com/v1/places:searchText"
+_PLACES_SEARCHNEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby"
 
 
 def _places_text_search(
@@ -105,6 +106,115 @@ def _places_text_search(
         "lat": loc["latitude"],
         "lng": loc["longitude"],
         "address": p.get("formattedAddress"),
+    }
+
+
+def _places_category_nearest(lat: float, lng: float, query: str, radius_m: float = 8000.0) -> dict | None:
+    """
+    P2-4: find the NEAREST place matching a free-text category (e.g. "Indian grocery")
+    to a given point, using Places API (New) Text Search with rankPreference=DISTANCE
+    and a locationBias circle. Returns {"name", "lat", "lng"} of the closest match, or None.
+    Each successful call is one billable Places request — guardrailed by the caller.
+    """
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not key:
+        return None
+    body = {
+        "textQuery": query,
+        "rankPreference": "DISTANCE",
+        "locationBias": {
+            "circle": {"center": {"latitude": lat, "longitude": lng}, "radius": float(radius_m)}
+        },
+        "maxResultCount": 1,
+    }
+    resp = httpx.post(
+        _PLACES_SEARCHTEXT_URL,
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": key,
+            "X-Goog-FieldMask": "places.displayName,places.location",
+        },
+        json=body,
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    places = resp.json().get("places", [])
+    if not places:
+        return None
+    p = places[0]
+    loc = p.get("location") or {}
+    if "latitude" not in loc or "longitude" not in loc:
+        return None
+    return {
+        "name": (p.get("displayName") or {}).get("text") or query,
+        "lat": loc["latitude"],
+        "lng": loc["longitude"],
+    }
+
+
+# ─── P2-4 transit (Tier 1): nearest transit STATION by Google Places type ─────
+# Free-text "Caltrain"/"bus stop" geocodes to an area centroid, not a station, so for
+# transit we use Places (New) Nearby Search constrained to a station *type* and ranked by
+# DISTANCE. This returns the actual nearest station's name + coords (nationwide, no GTFS).
+
+# Ordered keyword → Places station type. Order matters: "light rail" must be checked
+# before "rail" so it isn't swallowed by the train rule.
+_TRANSIT_TYPE_RULES = [
+    (("bus",), "bus_station"),
+    (("subway", "metro", "underground"), "subway_station"),
+    (("light rail", "lightrail", "tram", "streetcar", "trolley"), "light_rail_station"),
+    (("train", "rail", "caltrain", "amtrak", "commuter", "railway"), "train_station"),
+]
+
+
+def _transit_type_for(label: str) -> str:
+    """Map a free-text transit label to a Google Places (New) station type."""
+    l = (label or "").lower()
+    for keys, station_type in _TRANSIT_TYPE_RULES:
+        if any(k in l for k in keys):
+            return station_type
+    return "transit_station"  # generic: any stop/station
+
+
+def _places_nearby_transit(lat: float, lng: float, included_type: str, radius_m: float = 8000.0) -> dict | None:
+    """
+    Nearest transit station of a given type to a point, via Places (New) Nearby Search.
+    NOTE: searchNearby requires `locationRestriction` (a circle) — unlike Text Search,
+    which only accepts a circle in `locationBias`. Returns {"name","lat","lng"} or None.
+    """
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not key:
+        return None
+    body = {
+        "includedTypes": [included_type],
+        "maxResultCount": 1,
+        "rankPreference": "DISTANCE",
+        "locationRestriction": {
+            "circle": {"center": {"latitude": lat, "longitude": lng}, "radius": float(radius_m)}
+        },
+    }
+    resp = httpx.post(
+        _PLACES_SEARCHNEARBY_URL,
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": key,
+            "X-Goog-FieldMask": "places.displayName,places.location",
+        },
+        json=body,
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    places = resp.json().get("places", [])
+    if not places:
+        return None
+    p = places[0]
+    loc = p.get("location") or {}
+    if "latitude" not in loc or "longitude" not in loc:
+        return None
+    return {
+        "name": (p.get("displayName") or {}).get("text") or included_type.replace("_", " "),
+        "lat": loc["latitude"],
+        "lng": loc["longitude"],
     }
 
 
@@ -493,7 +603,15 @@ def _compute_requirements(
         }
 
     # Effective total budget for searching (P2-3 per-person economics).
+    roommates = int(roommates or 0)
     effective_budget = budget * (roommates + 1) if budget_is_per_person else budget
+
+    # P2-3: when the user has roommates but didn't specify a layout, default the
+    # bedroom floor to one room per occupant (roommates + 1). Explicit min_bedrooms
+    # always wins; 0 roommates leaves the filter at "Any".
+    eff_min_bedrooms = int(min_bedrooms or 0)
+    if roommates > 0 and eff_min_bedrooms == 0:
+        eff_min_bedrooms = roommates + 1
 
     requirements = {
         "city": city,
@@ -502,9 +620,9 @@ def _compute_requirements(
         "effective_budget": effective_budget,
         "landmark": landmark,
         "areas": areas or [{"city": city, "state": norm_state}],
-        "min_bedrooms": int(min_bedrooms or 0),
+        "min_bedrooms": eff_min_bedrooms,
         "min_bathrooms": float(min_bathrooms or 0),
-        "roommates": int(roommates or 0),
+        "roommates": roommates,
         "budget_is_per_person": bool(budget_is_per_person),
         "proximity": proximity or [],
     }
@@ -575,6 +693,25 @@ def store_requirements(
     Optional (default 0/False = 'Any', no filter): min_bedrooms, min_bathrooms,
     roommates, budget_is_per_person.
     """
+    # P2-5: fold in optional preferences the F3 bridge seeded from the RequirementCards
+    # UI (`pending_optional`). The LLM only parses the 4 required fields from free text;
+    # structured optional fields — especially `proximity`, which the LLM can't reliably
+    # pass as a nested list — are applied here deterministically. An explicit non-default
+    # value supplied by the LLM (because the user restated it in text) wins over the card.
+    pending: dict = {}
+    raw = tool_context.state.get("pending_optional")
+    if raw:
+        try:
+            pending = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pending = {}
+
+    min_bedrooms = int(min_bedrooms or 0) or int(pending.get("min_bedrooms") or 0)
+    min_bathrooms = float(min_bathrooms or 0) or float(pending.get("min_bathrooms") or 0)
+    roommates = int(roommates or 0) or int(pending.get("roommates") or 0)
+    budget_is_per_person = bool(budget_is_per_person) or bool(pending.get("budget_is_per_person"))
+    proximity = pending.get("proximity") or []
+
     result = _seed_requirements(
         tool_context.state,
         city=city,
@@ -585,10 +722,158 @@ def store_requirements(
         min_bathrooms=min_bathrooms,
         roommates=roommates,
         budget_is_per_person=budget_is_per_person,
+        proximity=proximity,
     )
     if result.get("error"):
         return result["message"]
     return "Requirements saved. Proceeding to research."
+
+
+# ─── P2-4: Proximity to transit + amenities (guardrailed Places usage) ───────
+# Mirrors the RentCast/Apify guardrail pattern: per-run cap + monthly counter in
+# data/places_usage.json + an in-process cache keyed on rounded coords + query, so
+# nearby listings don't each spend a separate Places call. Runs only for the
+# already-displayed listings (the Analyst passes their lat/lng as origins).
+
+_PLACES_USAGE_FILE = _PROJECT_ROOT / "data" / "places_usage.json"
+_PLACES_MONTHLY_LIMIT = 200     # Text Search (New) calls per month
+_PLACES_MAX_PER_RUN = 25        # ≤ ~5 listings × ~5 category queries per search
+_PLACES_CACHE: dict[str, dict | None] = {}  # "rlat,rlng|query" → nearest match (or None)
+_places_run_count = 0           # reset at the start of every find_nearby_amenities batch
+
+
+def _load_places_usage() -> dict:
+    current_month = datetime.now().strftime("%Y-%m")
+    if _PLACES_USAGE_FILE.exists():
+        try:
+            with open(_PLACES_USAGE_FILE) as f:
+                data = json.load(f)
+            if data.get("month") == current_month:
+                return data
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return {"month": current_month, "count": 0}
+
+
+def _save_places_usage(usage: dict) -> None:
+    _PLACES_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_PLACES_USAGE_FILE, "w") as f:
+        json.dump(usage, f)
+
+
+def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    from math import radians, sin, cos, asin, sqrt
+    dlat = radians(lat2 - lat1)
+    dlng = radians(lng2 - lng1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
+    return 3958.8 * 2 * asin(sqrt(a))  # Earth radius in miles
+
+
+def _distance_text(miles: float) -> str:
+    return f"{miles:.1f} mi" if miles < 10 else f"{round(miles)} mi"
+
+
+def _parse_origin(origin: str) -> tuple[float, float] | None:
+    try:
+        lat_s, lng_s = origin.split(",")
+        return float(lat_s.strip()), float(lng_s.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def find_nearby_amenities(origins: list[str], label: str, kind: str = "category") -> str:
+    """
+    For each listing origin, find the nearest amenity matching `label` and its distance.
+    Call this once per proximity preference in user_requirements["proximity"], passing the
+    SAME origins list you used for check_commutes (so results line up with the listings).
+
+    Args:
+        origins: List of "lat,lng" strings for the displayed listings (e.g. ["37.39,-122.08", ...]).
+        label: The amenity to locate, e.g. "Caltrain"/"bus stop" (transit), "Indian grocery" (category).
+        kind: "transit"  → nearest transit STATION via Places (New) Nearby Search constrained to the
+                           matching station type (train/bus/subway/light-rail), ranked by distance.
+                           Use this for transit (trains, buses, subway, Caltrain, BART, etc.).
+              "category" → Places (New) Text Search near EACH listing for the nearest match
+                           (e.g. grocery, gym, park). Both are guardrailed: per-run cap + monthly
+                           counter + coord cache.
+              "named"    → resolve `label` ONCE via free geocoding to a fixed point, then report each
+                           listing's straight-line distance to it (use only for a specific named place).
+
+    Returns JSON string:
+      {"label": str, "kind": str, "results": [{"origin","name","distance_text"} | null per origin]}
+    """
+    global _places_run_count
+    if not origins:
+        return json.dumps({"label": label, "kind": kind, "results": []})
+    if kind not in ("named", "transit", "category"):
+        kind = "category"
+
+    # ── Named: one free geocode to a fixed point, then haversine per listing ──
+    if kind == "named":
+        try:
+            client = _get_gmaps_client()
+            geo = client.geocode(label)
+            if not geo:
+                return json.dumps({"label": label, "kind": kind, "results": [], "error": "not_found"})
+            loc = geo[0]["geometry"]["location"]
+            name = geo[0].get("formatted_address", label)
+            results = []
+            for origin in origins:
+                pt = _parse_origin(origin)
+                if not pt:
+                    results.append(None)
+                    continue
+                miles = _haversine_miles(pt[0], pt[1], loc["lat"], loc["lng"])
+                results.append({"origin": origin, "name": name, "distance_text": _distance_text(miles)})
+            return json.dumps({"label": label, "kind": kind, "results": results})
+        except Exception as e:
+            return json.dumps({"label": label, "kind": kind, "results": [], "error": str(e)})
+
+    # ── Category / transit: nearest Places match per listing, guardrailed + cached ──
+    # Both spend Places calls; they differ only in the per-origin resolver + cache namespace.
+    if kind == "transit":
+        included_type = _transit_type_for(label)
+        resolver = lambda lat, lng: _places_nearby_transit(lat, lng, included_type)  # noqa: E731
+        cache_label = f"transit:{included_type}"
+    else:
+        resolver = lambda lat, lng: _places_category_nearest(lat, lng, label)  # noqa: E731
+        cache_label = label.lower()
+
+    _places_run_count = 0
+    usage = _load_places_usage()
+    results = []
+    for origin in origins:
+        pt = _parse_origin(origin)
+        if not pt:
+            results.append(None)
+            continue
+        lat, lng = pt
+        cache_key = f"{round(lat, 3)},{round(lng, 3)}|{cache_label}"
+        if cache_key in _PLACES_CACHE:
+            match = _PLACES_CACHE[cache_key]
+        elif _places_run_count >= _PLACES_MAX_PER_RUN or usage["count"] >= _PLACES_MONTHLY_LIMIT:
+            print(f"   ⛔ Places guardrail hit (run {_places_run_count}/{_PLACES_MAX_PER_RUN}, "
+                  f"month {usage['count']}/{_PLACES_MONTHLY_LIMIT}). Skipping remaining '{label}' lookups.")
+            results.append(None)
+            continue
+        else:
+            try:
+                match = resolver(lat, lng)
+            except Exception as e:
+                print(f"   ⚠️  Places lookup failed for '{label}' near {origin}: {e}")
+                match = None
+            _PLACES_CACHE[cache_key] = match
+            _places_run_count += 1
+            usage["count"] += 1
+        if match:
+            miles = _haversine_miles(lat, lng, match["lat"], match["lng"])
+            results.append({"origin": origin, "name": match["name"], "distance_text": _distance_text(miles)})
+        else:
+            results.append(None)
+    _save_places_usage(usage)
+    print(f"   📊 Places usage: {usage['count']}/{_PLACES_MONTHLY_LIMIT} this month "
+          f"({_places_run_count} new calls for '{label}')")
+    return json.dumps({"label": label, "kind": kind, "results": results})
 
 
 def check_commutes(origins: list[str], destination: str, mode: str = "driving") -> str:

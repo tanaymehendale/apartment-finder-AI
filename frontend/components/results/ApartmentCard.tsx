@@ -7,6 +7,7 @@ interface Props {
   index: number;
   isHighlighted: boolean;
   onHover: (id: string | null) => void;
+  roommates?: number;
 }
 
 const RANK_LABELS = ["Top Pick", "Runner-up", "3rd Choice", "4th Choice", "5th Choice"];
@@ -18,9 +19,13 @@ const RANK_COLORS = [
   "bg-gray-400 text-white",
 ];
 
-export function ApartmentCard({ apartment, index, isHighlighted, onHover }: Props) {
+export function ApartmentCard({ apartment, index, isHighlighted, onHover, roommates = 0 }: Props) {
   const rankLabel = RANK_LABELS[index] ?? `Option ${index + 1}`;
   const rankColor = RANK_COLORS[index] ?? "bg-gray-500 text-white";
+
+  // P2-3: per-person rent split when the user is sharing with roommates.
+  const occupants = roommates + 1;
+  const perPerson = roommates > 0 ? Math.round(apartment.monthly_price / occupants) : null;
 
   return (
     <div
@@ -52,6 +57,11 @@ export function ApartmentCard({ apartment, index, isHighlighted, onHover }: Prop
           ${apartment.monthly_price.toLocaleString()}
         </span>
         <span className="text-sm text-muted">/mo</span>
+        {perPerson != null && (
+          <span className="ml-2 text-xs font-medium text-primary">
+            ${perPerson.toLocaleString()}/person · split {occupants} ways
+          </span>
+        )}
       </div>
 
       {/* Address */}
@@ -77,9 +87,22 @@ export function ApartmentCard({ apartment, index, isHighlighted, onHover }: Prop
         )}
       </div>
 
-      {/* Commute badge */}
+      {/* Commute + proximity badges */}
       <div className="flex flex-wrap gap-1.5">
         <CommuteBadge commute={apartment.commute} />
+        {apartment.proximity_results?.map((p) => (
+          <span
+            key={p.label}
+            title={p.name}
+            className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            {p.label} · {p.distance_text}
+          </span>
+        ))}
       </div>
 
       {/* Safety summary */}

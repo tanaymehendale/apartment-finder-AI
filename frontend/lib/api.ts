@@ -1,5 +1,13 @@
 const BASE = "/api";
 
+// SSE streaming bypass. Next.js (both the dev `rewrites()` proxy AND App-Router route
+// handlers) BUFFERS `text/event-stream` responses in dev — so the agent pipeline looks
+// frozen on "Manager" until it finishes, then dumps everything at once. Pointing the chat
+// stream straight at the FastAPI backend (CORS-enabled) bypasses Next and streams live.
+// Set NEXT_PUBLIC_BACKEND_URL (e.g. http://127.0.0.1:8000) in frontend/.env.local for dev;
+// leave it unset in production to use the same-origin route handler.
+const STREAM_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+
 export async function createSession(): Promise<string> {
   const res = await fetch(`${BASE}/sessions`, { method: "POST" });
   if (!res.ok) throw new Error("Failed to create session");
@@ -24,7 +32,7 @@ export interface RequirementsPayload {
   roommates?: number;
   budget_is_per_person?: boolean;
   areas?: { city: string; state: string }[];
-  proximity?: { label: string; kind: "named" | "category" }[];
+  proximity?: { label: string; kind: "named" | "category" | "transit" }[];
 }
 
 export function chatStream(
@@ -40,7 +48,7 @@ export function chatStream(
   return new ReadableStream({
     async start(streamController) {
       try {
-        const res = await fetch(`${BASE}/chat/${sessionId}`, {
+        const res = await fetch(`${STREAM_BASE}${BASE}/chat/${sessionId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requirements ? { message, requirements } : { message }),

@@ -16,9 +16,10 @@ const MapView = dynamic(() => import("@/components/map/MapView").then((m) => ({ 
 interface Props {
   apartments: Apartment[];
   landmark?: LandmarkInfo | null;
+  roommates?: number;
 }
 
-export function ResultsPanel({ apartments, landmark }: Props) {
+export function ResultsPanel({ apartments, landmark, roommates = 0 }: Props) {
   const [activeTab, setActiveTab] = useState<"cards" | "map">("map");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const hasResults = apartments.length > 0;
@@ -81,6 +82,7 @@ export function ResultsPanel({ apartments, landmark }: Props) {
                 index={i}
                 isHighlighted={hoveredId === apt.id}
                 onHover={setHoveredId}
+                roommates={roommates}
               />
             ))}
           </div>

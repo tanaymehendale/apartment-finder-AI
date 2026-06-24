@@ -1,4 +1,4 @@
-import type { Apartment, CommuteInfo } from "./types";
+import type { Apartment, CommuteInfo, ProximityResult } from "./types";
 
 interface RawApartment {
   id?: string;
@@ -148,6 +148,31 @@ export function parseAnalystDossier(dossier: string): {
         };
       }
     });
+  }
+
+  // P2-4: attach proximity badges. Each find_nearby_amenities block is a top-level
+  // {"label","kind","results":[...]} object; results[i] aligns with the same origins
+  // (apartment order) the Analyst used for commutes, so we attach by index.
+  for (const block of objectBlocks) {
+    if (!block.includes('"results"') || !block.includes('"label"')) continue;
+    try {
+      const data = JSON.parse(block) as {
+        label?: string;
+        results?: Array<{ origin?: string; name?: string; distance_text?: string } | null>;
+      };
+      if (!data.label || !Array.isArray(data.results)) continue;
+      data.results.forEach((r, i) => {
+        if (!r || !r.name || !r.distance_text || !apartments[i]) return;
+        const entry: ProximityResult = {
+          label: data.label!,
+          name: r.name,
+          distance_text: r.distance_text,
+        };
+        (apartments[i].proximity_results ??= []).push(entry);
+      });
+    } catch {
+      continue;
+    }
   }
 
   return { apartments };

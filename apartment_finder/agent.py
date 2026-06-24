@@ -1,5 +1,8 @@
+import asyncio
+from typing import AsyncGenerator
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.genai import types
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools import FunctionTool
@@ -7,15 +10,81 @@ from google.adk.tools import google_search
 from . import instructions
 from . import tools
 
+# Retry policy for the Gemini-backed Reviewer. We deliberately keep ONLY 429 here:
+# exp_base=7 makes 429 (free-tier RPM quota) retries wait 7→49→343s so they land
+# OUTSIDE the 60s RPM window and the quota refills (exp_base=2 retries inside the
+# window and fails — do NOT lower it). Transient capacity errors (503/500/504
+# "overloaded") are handled separately by ResilientGemini below with a SHORT retry +
+# model fallback, because exp_base=7 would stall a 503 for minutes.
 retry_config = types.HttpRetryOptions(
     attempts=5,
-    exp_base=7,   # Long backoff keeps retries outside the 60s RPM window on free tier
+    exp_base=7,
     initial_delay=1,
-    http_status_codes=[429, 500, 503, 504],
+    http_status_codes=[429],
 )
 
+
+class ResilientGemini(BaseLlm):
+    """
+    Wraps a primary Gemini model so the Reviewer survives Google-side capacity blips.
+
+    On a transient error (503 UNAVAILABLE / "model overloaded" / 500 INTERNAL / 504
+    DEADLINE) from the primary, it does a few SHORT retries, then falls back ONCE to a
+    higher-capacity model. 429 (quota) is NOT treated as transient here — it propagates
+    so the underlying exp_base=7 retry + the session bridge handle it. Each attempt runs
+    on a deep copy of the request so ADK's in-place request mutations don't compound.
+    """
+    primary: BaseLlm
+    fallback: BaseLlm
+    transient_retries: int = 2
+    retry_delay_s: float = 3.0
+
+    async def generate_content_async(
+        self, llm_request, stream: bool = False
+    ) -> AsyncGenerator:
+        attempt = 0
+        while True:
+            yielded = False
+            try:
+                async for resp in self.primary.generate_content_async(
+                    llm_request.model_copy(deep=True), stream=stream
+                ):
+                    yielded = True
+                    yield resp
+                return
+            except Exception as exc:
+                if yielded:
+                    raise  # already streamed partial output — unsafe to retry/fallback
+                up = str(exc).upper()
+                transient = any(
+                    k in up for k in ("503", "504", "UNAVAILABLE", "OVERLOADED", "INTERNAL", "DEADLINE")
+                )
+                if not transient:
+                    raise  # e.g. 429 → let exp_base=7 / the bridge handle it
+                if attempt < self.transient_retries:
+                    attempt += 1
+                    await asyncio.sleep(self.retry_delay_s)
+                    continue
+                # Quick retries exhausted → fall back once to the bigger-capacity model.
+                print(
+                    f"   ⚠️  Reviewer: '{self.primary.model}' transient error after "
+                    f"{attempt} retries — falling back to '{self.fallback.model}'."
+                )
+                async for resp in self.fallback.generate_content_async(
+                    llm_request.model_copy(deep=True), stream=stream
+                ):
+                    yield resp
+                return
+
+
 # Gemini kept ONLY for Reviewer — google_search grounding requires a Gemini model.
-gemini_model = Gemini(model="gemini-2.5-flash-lite", retry_options=retry_config)
+# flash-lite primary (cheapest); on a 503/overload, fall back to full flash (separate
+# capacity pool, usually available when lite is shedding load).
+gemini_model = ResilientGemini(
+    model="gemini-2.5-flash-lite",
+    primary=Gemini(model="gemini-2.5-flash-lite", retry_options=retry_config),
+    fallback=Gemini(model="gemini-2.5-flash", retry_options=retry_config),
+)
 
 # OpenAI for all other agents; reduces Gemini calls by ~75% per query.
 # OPENAI_API_KEY is read automatically from .env.
@@ -27,7 +96,11 @@ analyst = LlmAgent(
     model=openai_model,
     description="Executes tools to find and analyze apartments.",
     instruction=instructions.ANALYST_PROMPT,
-    tools=[FunctionTool(tools.fetch_apartments), FunctionTool(tools.check_commutes)],
+    tools=[
+        FunctionTool(tools.fetch_apartments),
+        FunctionTool(tools.check_commutes),
+        FunctionTool(tools.find_nearby_amenities),
+    ],
     output_key="analyst_dossier"
 )
 

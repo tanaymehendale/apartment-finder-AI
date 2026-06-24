@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useRef, useEffect } from "react";
-import { createSession, chatStream } from "@/lib/api";
+import { createSession, chatStream, type RequirementsPayload } from "@/lib/api";
 import { parseAnalystDossier, mergeSafetyReport, parseRanking, applyRanking, stripRankingMarker } from "@/lib/parseApartments";
 import type { ChatMessage, AgentStatusEvent, AgentName, Apartment, LandmarkInfo, SSEEvent } from "@/lib/types";
 
@@ -28,6 +28,9 @@ export function useChat() {
   const [apartments, setApartments] = useState<Apartment[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [landmark, setLandmark] = useState<LandmarkInfo | null>(null);
+  // P2-3: number of additional roommates (0 = living solo). Drives the per-person
+  // rent split shown on each card.
+  const [roommates, setRoommates] = useState<number>(0);
   const sessionIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -64,6 +67,16 @@ export function useChat() {
     }
   }, [landmark]);
 
+  useEffect(() => {
+    const id = sessionIdRef.current;
+    if (!id || roommates === 0) return;
+    try {
+      localStorage.setItem(`apt_roommates_${id}`, String(roommates));
+    } catch {
+      // ignore
+    }
+  }, [roommates]);
+
   const stopStreaming = useCallback(async () => {
     abortRef.current?.abort();
     setIsStreaming(false);
@@ -77,7 +90,7 @@ export function useChat() {
     }
   }, []);
 
-  const sendMessage = useCallback(async (userText: string) => {
+  const sendMessage = useCallback(async (userText: string, requirements?: RequirementsPayload) => {
     if (isStreaming || !userText.trim()) return;
 
     const userMsg: ChatMessage = {
@@ -115,7 +128,10 @@ export function useChat() {
     const abortController = new AbortController();
     abortRef.current = abortController;
 
-    const stream = chatStream(sessionIdRef.current!, userText.trim(), abortController.signal);
+    // Only forward a structured payload if it actually carries optional fields;
+    // an empty object means "plain free-text search" (skip the structured path).
+    const reqs = requirements && Object.keys(requirements).length > 0 ? requirements : undefined;
+    const stream = chatStream(sessionIdRef.current!, userText.trim(), abortController.signal, reqs);
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -207,6 +223,16 @@ export function useChat() {
               });
             }
 
+            // P2-3: extract roommate count for per-person rent display
+            if (event.user_requirements) {
+              try {
+                const r = JSON.parse(event.user_requirements);
+                setRoommates(Number(r.roommates) || 0);
+              } catch {
+                // ignore
+              }
+            }
+
             // Update session title from user_requirements
             if (event.user_requirements && sessionIdRef.current) {
               const title = buildSessionTitle(event.user_requirements);
@@ -250,6 +276,7 @@ export function useChat() {
     setAgentStatus(null);
     setIsStreaming(false);
     setLandmark(null);
+    setRoommates(0);
   }, []);
 
   const restoreSession = useCallback((sessionId: string) => {
@@ -289,6 +316,9 @@ export function useChat() {
       setLandmark(null);
     }
 
+    const storedRoommates = localStorage.getItem(`apt_roommates_${sessionId}`);
+    setRoommates(storedRoommates ? Number(storedRoommates) || 0 : 0);
+
     setAgentStatus(null);
     setIsStreaming(false);
   }, []);
@@ -299,6 +329,7 @@ export function useChat() {
     apartments,
     isStreaming,
     landmark,
+    roommates,
     sendMessage,
     stopStreaming,
     resetSession,

@@ -1,8 +1,10 @@
 "use client";
-import { useRef, useEffect, useState, KeyboardEvent } from "react";
+import { useRef, useEffect, useState, useCallback, KeyboardEvent } from "react";
 import type { ChatMessage, AgentStatusEvent } from "@/lib/types";
+import type { RequirementsPayload } from "@/lib/api";
 import { MessageBubble } from "./MessageBubble";
 import { AgentStatus } from "./AgentStatus";
+import { RequirementCards } from "./RequirementCards";
 
 type Phase = "landing" | "chatting" | "results";
 
@@ -17,15 +19,19 @@ interface Props {
   messages: ChatMessage[];
   agentStatus: AgentStatusEvent | null;
   isStreaming: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, requirements?: RequirementsPayload) => void;
   onStop: () => void;
   onNewSearch: () => void;
 }
 
 export function ChatPanel({ phase, messages, agentStatus, isStreaming, onSend, onStop, onNewSearch }: Props) {
   const [input, setInput] = useState("");
+  // P2-5: optional-only requirements payload from the RequirementCards panel (landing).
+  const [reqPayload, setReqPayload] = useState<Partial<RequirementsPayload>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleReqChange = useCallback((p: Partial<RequirementsPayload>) => setReqPayload(p), []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -35,7 +41,8 @@ export function ChatPanel({ phase, messages, agentStatus, isStreaming, onSend, o
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput("");
-    onSend(text);
+    // On landing, carry the optional RequirementCards selections; elsewhere they don't apply.
+    onSend(text, phase === "landing" ? (reqPayload as RequirementsPayload) : undefined);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }
 
@@ -98,12 +105,15 @@ export function ChatPanel({ phase, messages, agentStatus, isStreaming, onSend, o
             <p className="text-[11px] text-muted/60 text-center mt-2">Enter to send · Shift+Enter for new line</p>
           </div>
 
+          {/* Optional refinement cards (P2-5) */}
+          <RequirementCards onChange={handleReqChange} />
+
           {/* Suggestion chips */}
           <div className="w-full flex flex-col gap-2">
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}
-                onClick={() => onSend(s)}
+                onClick={() => onSend(s, reqPayload as RequirementsPayload)}
                 className="w-full text-left px-4 py-3 text-sm text-gray-600 bg-white border border-gray-200 rounded-2xl hover:border-primary hover:text-primary hover:bg-primary-50 transition-all shadow-sm"
               >
                 {s}

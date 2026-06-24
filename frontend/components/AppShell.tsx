@@ -21,6 +21,7 @@ export function AppShell() {
     apartments,
     isStreaming,
     landmark,
+    roommates,
     sendMessage,
     stopStreaming,
     resetSession,
@@ -81,7 +82,7 @@ export function AppShell() {
           ].join(" ")}
         >
           {phase === "results" && (
-            <ResultsPanel apartments={apartments} landmark={landmark} />
+            <ResultsPanel apartments={apartments} landmark={landmark} roommates={roommates} />
           )}
         </div>
       </div>

@@ -17,3 +17,10 @@ frontend/tsconfig.tsbuildinfo
 
 # Local data / tracking files
 data/rentcast_usage.json
+data/places_usage.json
+
+# Playwright test artifacts
+.playwright-mcp/
+
+# Screenshots / local test outputs
+*.png

@@ -13,7 +13,15 @@ export interface Apartment {
   over_budget?: boolean;
   commute?: CommuteInfo;
   safety_summary?: string;
+  proximity_results?: ProximityResult[];
   photos?: string[];
+}
+
+// P2-4: nearest amenity match for a proximity preference the user asked about.
+export interface ProximityResult {
+  label: string;        // what the user searched for, e.g. "Caltrain", "Indian grocery"
+  name: string;         // resolved place name, e.g. "Sunnyvale Caltrain Station"
+  distance_text: string; // e.g. "0.8 mi"
 }
 
 export interface CommuteInfo {

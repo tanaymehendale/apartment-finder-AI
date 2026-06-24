@@ -30,9 +30,11 @@ python test_mcp.py             # Validates Google Maps MCP connectivity (legacy;
 - `GOOGLE_API_KEY` — Gemini API key (required)
 - `GOOGLE_MAPS_API_KEY` — Google Maps key (required). Needs Distance Matrix, Directions,
   Geocoding, and **Places API (New)** enabled. Places (New) is used for landmark resolution
-  (`store_requirements`) and, later, category proximity search — called directly via httpx at
-  `https://places.googleapis.com/v1/places:searchText` (the `googlemaps` Python lib targets the
-  legacy Places endpoint and does NOT work with Places API (New)).
+  (`store_requirements`), category proximity search (`places:searchText`), and **transit
+  proximity** (nearest station by type via `places:searchNearby` — P2-4 `find_nearby_amenities`
+  `kind="transit"`). Called directly via httpx (the `googlemaps` Python lib targets the legacy
+  Places endpoint and does NOT work with Places API (New)). Gotcha: `searchText` only accepts a
+  *circle* in `locationBias`; `searchNearby` requires a *circle* in `locationRestriction`.
 - `RENTCAST_API_KEY` — RentCast listing API, free tier 50 calls/month (**at least one of these is required**)
 - `APIFY_API_KEY` — Apify Zillow Scraper actor, ~$5 credit/month free tier (**at least one of these is required**)
 
@@ -61,7 +63,7 @@ System prompts for all four agents live in [apartment_finder/instructions.py](ap
 
 **Analyst** — reads `{user_requirements}` from session state via ADK template substitution. Calls `fetch_apartments` (passing `effective_budget` + layout filters) then `check_commutes` on the full set (up to 5–6, single Distance Matrix call). Writes output to `analyst_dossier`. Emits `"STATUS: NO_RESULTS"` to short-circuit the pipeline when no listings match, and appends `NO_MATCH_IN_BUDGET: suggested_budget=<N>` when nothing is in budget (P1-4).
 
-**Reviewer** — reads `{analyst_dossier}`. Skips all tool calls if it sees `"STATUS: NO_RESULTS"`. Otherwise calls `google_search` once per apartment to research neighborhood safety. Writes to `safety_report`.
+**Reviewer** — reads `{analyst_dossier}`. Skips all tool calls if it sees `"STATUS: NO_RESULTS"`. Otherwise makes **one batched `google_search`** covering all listings' neighborhoods at once (not one call per apartment — cuts Gemini calls ~5×→1 to dodge 429/503), then writes a per-apartment safety note to `safety_report`. Runs on `ResilientGemini` (agent.py): `google_search` grounding requires Gemini, so the Reviewer is the only Gemini agent; on a transient 503/500/504 "overloaded" it does a short retry then falls back `gemini-2.5-flash-lite → gemini-2.5-flash`. 429 (RPM quota) is left to the model's `exp_base=7` retry (which must stay 7 — see agent.py). A Reviewer/Summarizer failure no longer discards results: `api/session_manager.py` still emits the `state` event with the Analyst's listings on any terminal error.
 
 **Summarizer** — reads `{safety_report}`. On `"STATUS: NO_RESULTS"`, tells the user to adjust criteria. Labels any `over_budget` option ("$X above budget") and only elevates one as Top Pick if clearly better; on `NO_MATCH_IN_BUDGET` states nothing was in budget and quotes the area/layout market average. Otherwise produces the final ranked recommendation.
 

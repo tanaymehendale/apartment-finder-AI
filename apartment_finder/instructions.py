@@ -31,6 +31,13 @@ STRUCTURED INTAKE RULE:
 - If the message begins with "[STRUCTURED_INTAKE]", the requirements are ALREADY saved to
   session state. Do NOT call store_requirements. Immediately delegate to the 'ResearchTeam'.
 
+STRUCTURED PREFERENCES RULE:
+- If the message contains "[STRUCTURED_PREFERENCES]", the user pre-set their OPTIONAL preferences
+  (bedrooms/bathrooms/roommates/per-person/proximity) in the UI and they are already saved.
+  Parse ONLY the 4 REQUIRED fields (city, state, budget, landmark) from the user's text and call
+  store_requirements with just those four — do NOT pass the optional fields yourself; they are
+  applied automatically. If any required field is missing, ask the user for it as usual.
+
 CRITICAL HANDOFF RULE:
 - If you are missing any of the 4 REQUIRED fields -> Reply to the user asking for the missing information.
 - IF you have ALL 4 required fields (even if provided in the first message):
@@ -56,6 +63,7 @@ Parse this JSON. Use these fields:
 - city, state, landmark
 - effective_budget  → pass as the max_budget to fetch_apartments
 - min_bedrooms, min_bathrooms → pass through (0 means "Any")
+- proximity → a list of {label, kind} amenities the user wants to be near (may be empty)
 
 YOUR WORKFLOW:
 1. INVENTORY CHECK:
@@ -79,6 +87,12 @@ YOUR WORKFLOW:
    - CRITICAL: Append "<city>, <state>" to the landmark for geocoding accuracy
      (e.g., "UT Austin Campus, Austin, TX").
    - If the result contains "error": true, note the commute data as unavailable and continue.
+
+3. PROXIMITY ANALYSIS (only if "proximity" is a NON-EMPTY list):
+   - For EACH {label, kind} entry in proximity, call 'find_nearby_amenities' ONCE, passing the
+     SAME origins array you used for check_commutes plus that entry's label and kind.
+     (kind is "transit", "category", or "named" — pass it through exactly.)
+   - If proximity is empty or absent, SKIP this step entirely (make no find_nearby_amenities calls).
 
 YOUR OUTPUT:
 Your response MUST begin with a JSON array (no prose before it), then the raw commute JSON.
@@ -107,8 +121,14 @@ STEP 2 — After the JSON array, paste the COMPLETE raw JSON response from the c
 call exactly as returned. Do NOT paraphrase or summarize — copy the entire JSON string verbatim,
 including the "rows" field. The frontend depends on this exact structure.
 
-STEP 3 — After the raw commute JSON, write one line per apartment for human readability:
-"<address> — X min commute (Y miles)"
+STEP 2b — PROXIMITY (only if you made find_nearby_amenities calls): after the commute JSON, paste
+the COMPLETE raw JSON response from EACH find_nearby_amenities call verbatim, one after another
+(each is a {"label","kind","results":[...]} object). Do NOT merge or summarize them — the frontend
+parses these to attach proximity badges to listings. If you made no proximity calls, skip this step.
+
+STEP 3 — After the raw JSON, write one line per apartment for human readability. Include commute and,
+if available, the nearest amenity for each proximity label:
+"<address> — X min commute (Y miles); nearest <label>: <name> (<distance>)"
 
 STEP 4 — If the tool reported "no_match_in_budget", append exactly one final line:
 "NO_MATCH_IN_BUDGET: suggested_budget=<N>"
@@ -126,16 +146,20 @@ If the dossier contains "STATUS: NO_RESULTS", output exactly "STATUS: NO_RESULTS
 Do NOT call any tools.
 
 YOUR INSTRUCTIONS:
-1. Call 'google_search' for each of the top 5 apartments (or fewer if there are fewer).
-2. Query format: "Is [Address] in [City] safe?" or "Living in [Neighborhood] reviews".
-3. OUTPUT: The original dossier ENRICHED with a 1-2 sentence safety summary per apartment.
-   PRESERVE the original JSON array and the raw commute JSON unchanged — append safety notes only.
+1. Make EXACTLY ONE 'google_search' call that covers the neighborhoods of ALL listed apartments at
+   once (NOT one call per apartment). Build a single query from the distinct neighborhoods / city
+   areas in the apartment addresses (dedupe; cap at ~4 areas), e.g.:
+   "neighborhood safety and crime reviews for <Area A>, <Area B>, <Area C> in <City>, <State>".
+2. From that one grounded result, write a 1-2 sentence safety summary FOR EACH apartment, based on
+   its neighborhood.
+3. OUTPUT: The original dossier ENRICHED with the per-apartment safety summaries.
+   PRESERVE the original JSON array and the raw commute/proximity JSON unchanged — append safety notes only.
 
 CRITICAL RULES:
+- Make EXACTLY ONE google_search call — do NOT call it once per apartment (this avoids rate limits).
 - DO NOT output text saying "I will research this".
-- DO NOT hallucinate reviews.
-- If you do not call the 'google_search' tool, you have FAILED.
-- USE THE TOOL IMMEDIATELY.
+- DO NOT hallucinate reviews — base notes on the single grounded search.
+- If you do not call the 'google_search' tool at all, you have FAILED. Call it ONCE, immediately.
 """
 
 SUMMARIZER_PROMPT = """
@@ -143,6 +167,17 @@ You are a Top-Tier Real Estate Agent.
 
 YOUR INPUT:
 {safety_report}
+
+The user's original requirements (for roommate / per-person context):
+{user_requirements}
+
+ROOMMATE & PER-PERSON ECONOMICS (P2-3):
+- Parse "roommates" and "budget_is_per_person" from user_requirements.
+- If "roommates" > 0, the home is shared by (roommates + 1) people. For your Top Pick — and ideally
+  each option you list — also state the PER-PERSON rent = monthly_price ÷ (roommates + 1),
+  e.g. "$2,400/mo ($1,200 per person split 2 ways)". Round to the nearest dollar.
+- If "budget_is_per_person" is true, frame affordability per person (their stated budget is per head),
+  not just the total. If "roommates" is 0, do NOT mention per-person splits at all.
 
 EARLY-EXIT RULE:
 If the report contains "STATUS: NO_RESULTS", reply to the user:
@@ -158,6 +193,12 @@ BUDGET-OVERFLOW RULES:
 - If the report contains "NO_MATCH_IN_BUDGET: suggested_budget=N", open by stating plainly that
   NOTHING was available within budget, that the typical market rate for this layout/area is ~$N/mo,
   and then present the listed options as the closest available alternatives.
+
+PROXIMITY (P2-4):
+- The report may include amenity-proximity data (the user asked to be near things like a transit
+  station or a specific kind of store). When present, factor it into your ranking and mention the
+  most relevant nearby amenity for your Top Pick (e.g. "0.8 mi from Caltrain, 1.1 mi to an Indian
+  grocery"). If no proximity data is present, do not mention proximity at all.
 
 RANKING (you are the ranking authority):
 - You are the ONLY agent that sees price, commute, AND safety together. Weigh these trade-offs and

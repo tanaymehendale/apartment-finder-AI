@@ -79,29 +79,62 @@ async def stream_message(
 
     message_text = message
     if requirements:
-        # Pre-seed state deterministically (no LLM parse). get_session returns a copy,
-        # so persist the computed delta via an event state_delta rather than mutating.
-        computed = _compute_requirements(**requirements)
-        if computed.get("error"):
-            yield {"type": "error", "content": computed["message"]}
-            yield {"type": "done"}
-            return
-        adk_session = await runner.session_service.get_session(
-            app_name="apartment_finder",
-            user_id=user_id,
-            session_id=adk_session_id,
-        )
-        await runner.session_service.append_event(
-            adk_session,
-            Event(author="user", actions=EventActions(state_delta=computed["delta"])),
-        )
-        message_text = (
-            "[STRUCTURED_INTAKE] The user's housing requirements have already been "
-            "collected and saved to session state "
-            f"(city={requirements.get('city')}, state={requirements.get('state')}, "
-            f"budget={requirements.get('budget')}, landmark={requirements.get('landmark')}). "
-            "Do NOT call store_requirements. Delegate to the ResearchTeam immediately."
-        )
+        has_required = all(requirements.get(k) for k in ("city", "state", "budget", "landmark"))
+        if has_required:
+            # Fully-structured intake: pre-seed state deterministically (no LLM parse).
+            # get_session returns a copy, so persist the delta via an event state_delta.
+            computed = _compute_requirements(**requirements)
+            if computed.get("error"):
+                yield {"type": "error", "content": computed["message"]}
+                yield {"type": "done"}
+                return
+            adk_session = await runner.session_service.get_session(
+                app_name="apartment_finder",
+                user_id=user_id,
+                session_id=adk_session_id,
+            )
+            await runner.session_service.append_event(
+                adk_session,
+                Event(author="user", actions=EventActions(state_delta=computed["delta"])),
+            )
+            message_text = (
+                "[STRUCTURED_INTAKE] The user's housing requirements have already been "
+                "collected and saved to session state "
+                f"(city={requirements.get('city')}, state={requirements.get('state')}, "
+                f"budget={requirements.get('budget')}, landmark={requirements.get('landmark')}). "
+                "Do NOT call store_requirements. Delegate to the ResearchTeam immediately."
+            )
+        else:
+            # P2-5 optional-only payload from RequirementCards: the 4 required fields are
+            # still in the free-text message (only the Manager can parse them). Seed the
+            # optional prefs into `pending_optional`; store_requirements folds them in,
+            # so proximity/beds/baths/roommates flow deterministically without the LLM
+            # having to pass a nested list.
+            optional = {
+                k: requirements[k]
+                for k in ("min_bedrooms", "min_bathrooms", "roommates",
+                          "budget_is_per_person", "proximity")
+                if requirements.get(k)
+            }
+            if optional:
+                adk_session = await runner.session_service.get_session(
+                    app_name="apartment_finder",
+                    user_id=user_id,
+                    session_id=adk_session_id,
+                )
+                import json as _json
+                await runner.session_service.append_event(
+                    adk_session,
+                    Event(author="user", actions=EventActions(
+                        state_delta={"pending_optional": _json.dumps(optional)})),
+                )
+                message_text = (
+                    f"{message}\n\n[STRUCTURED_PREFERENCES] The user set optional preferences "
+                    "in the UI; they are already saved to session state and will be applied "
+                    "automatically. Parse the 4 REQUIRED fields (city, state, budget, landmark) "
+                    "from the message above and call store_requirements with just those four. "
+                    "Do NOT try to pass the optional preferences yourself."
+                )
 
     new_message = types.Content(
         role="user",
@@ -109,6 +142,7 @@ async def stream_message(
     )
 
     last_active_agent = "Manager"
+    run_error: str | None = None
 
     _cancel_flags[session_id] = False  # reset on each new message
 
@@ -164,6 +198,8 @@ async def stream_message(
             error_msg = str(exc)
             is_rate_limit = "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg
 
+            # 429 / RESOURCE_EXHAUSTED = free-tier RPM limit → worth retrying the whole
+            # pipeline after a visible backoff countdown.
             if is_rate_limit and attempt < MAX_RETRIES - 1:
                 delay_match = re.search(r"retry in (\d+)", error_msg, re.IGNORECASE)
                 wait_seconds = int(delay_match.group(1)) if delay_match else 35
@@ -178,18 +214,18 @@ async def stream_message(
 
                 # Loop back for retry (seen_authors resets at top of loop)
                 continue
-            else:
-                if is_rate_limit:
-                    yield {
-                        "type": "error",
-                        "content": f"Rate limit reached after {attempt + 1} attempt(s). Please wait a moment and try again.",
-                    }
-                else:
-                    yield {"type": "error", "content": f"An error occurred: {error_msg[:200]}"}
-                yield {"type": "done"}
-                return
 
-    # After successful run, emit session state so the frontend can render cards
+            # Any other terminal error — including a downstream Gemini 503 "model
+            # overloaded" on the Reviewer — must NOT discard the run. Record it and
+            # break, so we still emit whatever partial results the Analyst already
+            # wrote to session state below. Re-running would waste provider quota
+            # redoing Analyst work that already succeeded.
+            run_error = error_msg
+            break
+
+    # Emit session state (partial OR complete) so the frontend can render cards even when
+    # a downstream stage failed. The Analyst writes `analyst_dossier` BEFORE the Reviewer
+    # runs, so listings/commutes/proximity survive a Reviewer/Summarizer failure.
     try:
         adk_session = await runner.session_service.get_session(
             app_name="apartment_finder",
@@ -197,18 +233,38 @@ async def stream_message(
             session_id=adk_session_id,
         )
         state = adk_session.state if adk_session else {}
-        yield {
-            "type": "state",
-            "analyst_dossier": state.get("analyst_dossier", ""),
-            "safety_report": state.get("safety_report", ""),
-            "user_requirements": state.get("user_requirements", ""),
-            "final_recommendation": state.get("final_recommendation", ""),
-            "landmark_lat": state.get("landmark_lat"),
-            "landmark_lng": state.get("landmark_lng"),
-            "landmark_name": state.get("landmark_name", ""),
-        }
+        if not run_error or state.get("analyst_dossier") or state.get("final_recommendation"):
+            yield {
+                "type": "state",
+                "analyst_dossier": state.get("analyst_dossier", ""),
+                "safety_report": state.get("safety_report", ""),
+                "user_requirements": state.get("user_requirements", ""),
+                "final_recommendation": state.get("final_recommendation", ""),
+                "landmark_lat": state.get("landmark_lat"),
+                "landmark_lng": state.get("landmark_lng"),
+                "landmark_name": state.get("landmark_name", ""),
+            }
     except Exception:
         pass
+
+    if run_error:
+        low = run_error.lower()
+        if "503" in run_error or "unavailable" in low or "overloaded" in low:
+            yield {
+                "type": "error",
+                "content": (
+                    "The safety-research step (Gemini) is temporarily overloaded, so I couldn't "
+                    "finish the full write-up. I've shown the listings, commutes, and proximity I "
+                    "found — please try again shortly for the safety summary and ranked recommendation."
+                ),
+            }
+        elif "429" in run_error or "resource_exhausted" in low:
+            yield {
+                "type": "error",
+                "content": "Rate limit reached. Please wait a moment and try again.",
+            }
+        else:
+            yield {"type": "error", "content": f"An error occurred: {run_error[:200]}"}
 
     yield {"type": "done"}
 
