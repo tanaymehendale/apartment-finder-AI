@@ -16,6 +16,22 @@ const RANK_LABELS = ["Best Pick", "Runner-up", "3rd Choice", "4th Choice", "5th 
 const RANK_COLORS = ["#1A56DB", "#374151", "#0EA5E9", "#6B7280", "#9CA3AF"];
 const RANK_BG = ["#1A56DB", "#374151", "#0EA5E9", "#6B7280", "#9CA3AF"];
 
+// P3-2: pure client-side Google Maps directions link, no backend call.
+function directionsUrl(apt: Apartment, landmark: LandmarkInfo): string {
+  const params = new URLSearchParams({
+    api: "1",
+    origin: `${apt.latitude},${apt.longitude}`,
+    destination: `${landmark.lat},${landmark.lng}`,
+    travelmode: "driving",
+  });
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+// P3-1: label the "View listing" button by source so it's clear what it opens.
+function listingButtonLabel(source?: string): string {
+  return source === "zillow" ? "View on Zillow" : "Search listings";
+}
+
 function makeAptIcon(index: number, highlighted: boolean) {
   const color = highlighted ? RANK_BG[index] ?? "#1A56DB" : "#6B7280";
   const size = highlighted ? 30 : 24;
@@ -156,7 +172,7 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
           }}
         >
           <Popup minWidth={200} maxWidth={260}>
-            <AptPopup apt={apt} index={index} />
+            <AptPopup apt={apt} index={index} landmark={landmark} />
           </Popup>
         </Marker>
       ))}
@@ -164,7 +180,7 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
   );
 }
 
-function AptPopup({ apt, index }: { apt: Apartment; index: number }) {
+function AptPopup({ apt, index, landmark }: { apt: Apartment; index: number; landmark?: LandmarkInfo | null }) {
   const rankLabel = RANK_LABELS[index] ?? `#${index + 1}`;
   const rankColor = RANK_COLORS[index] ?? "#6B7280";
 
@@ -215,10 +231,42 @@ function AptPopup({ apt, index }: { apt: Apartment; index: number }) {
 
       {/* Commute */}
       {apt.commute && (
-        <p style={{ color: "#6B7280" }}>
+        <p style={{ color: "#6B7280", marginBottom: "6px" }}>
           🚗 {apt.commute.duration_text} · {apt.commute.distance_text}
         </p>
       )}
+
+      {/* Actions: view listing + directions (P3-1, P3-2) */}
+      <div style={{ display: "flex", gap: "6px", marginTop: "6px" }}>
+        {apt.listing_url && (
+          <a
+            href={apt.listing_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              flex: 1, textAlign: "center", fontSize: "10.5px", fontWeight: 600,
+              padding: "5px 6px", borderRadius: "8px", background: "#F3F4F6",
+              color: "#374151", textDecoration: "none",
+            }}
+          >
+            {listingButtonLabel(apt.listing_source)}
+          </a>
+        )}
+        {landmark && (
+          <a
+            href={directionsUrl(apt, landmark)}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              flex: 1, textAlign: "center", fontSize: "10.5px", fontWeight: 600,
+              padding: "5px 6px", borderRadius: "8px", background: "#DBEAFE",
+              color: "#1A56DB", textDecoration: "none",
+            }}
+          >
+            Directions
+          </a>
+        )}
+      </div>
     </div>
   );
 }

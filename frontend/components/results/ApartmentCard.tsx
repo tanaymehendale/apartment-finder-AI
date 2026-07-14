@@ -1,5 +1,5 @@
 "use client";
-import type { Apartment } from "@/lib/types";
+import type { Apartment, LandmarkInfo } from "@/lib/types";
 import { CommuteBadge } from "./CommuteBadge";
 
 interface Props {
@@ -8,6 +8,25 @@ interface Props {
   isHighlighted: boolean;
   onHover: (id: string | null) => void;
   roommates?: number;
+  landmark?: LandmarkInfo | null;
+}
+
+// P3-2: pure client-side Google Maps directions link, no backend call.
+function directionsUrl(apartment: Apartment, landmark: LandmarkInfo): string {
+  const params = new URLSearchParams({
+    api: "1",
+    origin: `${apartment.latitude},${apartment.longitude}`,
+    destination: `${landmark.lat},${landmark.lng}`,
+    travelmode: "driving",
+  });
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+// P3-1: label the "View listing" button by source so it's clear what it opens.
+function listingButtonLabel(source?: string): string {
+  if (source === "zillow") return "View on Zillow";
+  if (source === "rentcast") return "Search listings";
+  return "Search listings";
 }
 
 const RANK_LABELS = ["Top Pick", "Runner-up", "3rd Choice", "4th Choice", "5th Choice"];
@@ -19,7 +38,7 @@ const RANK_COLORS = [
   "bg-gray-400 text-white",
 ];
 
-export function ApartmentCard({ apartment, index, isHighlighted, onHover, roommates = 0 }: Props) {
+export function ApartmentCard({ apartment, index, isHighlighted, onHover, roommates = 0, landmark }: Props) {
   const rankLabel = RANK_LABELS[index] ?? `Option ${index + 1}`;
   const rankColor = RANK_COLORS[index] ?? "bg-gray-500 text-white";
 
@@ -111,6 +130,38 @@ export function ApartmentCard({ apartment, index, isHighlighted, onHover, roomma
           {apartment.safety_summary}
         </p>
       )}
+
+      {/* Actions: view listing + directions (P3-1, P3-2) */}
+      <div className="mt-3 pt-3 border-t border-gray-50 flex items-center gap-2">
+        {apartment.listing_url && (
+          <a
+            href={apartment.listing_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+            {listingButtonLabel(apartment.listing_source)}
+          </a>
+        )}
+        {landmark && (
+          <a
+            href={directionsUrl(apartment, landmark)}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+            </svg>
+            Directions
+          </a>
+        )}
+      </div>
     </div>
   );
 }

@@ -463,9 +463,63 @@ _PROVIDERS = [
 ]
 
 
+def _dedupe_pool(pool: list[dict]) -> list[dict]:
+    """Dedupe a multi-provider pool by rounded coordinates (falls back to address
+    when coordinates are missing). First occurrence wins, so earlier providers in
+    `_PROVIDERS` (RentCast) take priority over later ones (Apify) on overlap."""
+    seen: set = set()
+    deduped = []
+    for l in pool:
+        lat, lng = l.get("latitude"), l.get("longitude")
+        key = (round(lat, 4), round(lng, 4)) if lat is not None and lng is not None else l.get("address")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(l)
+    return deduped
+
+
 # ─── Public tools (registered with ADK agents) ───────────────────────────────
 
 _OVER_BUDGET_FACTOR = 1.15  # stretch ceiling for over-budget options
+
+# Minimum in-budget listings we want before we stop querying further providers.
+# Below this, a single thin/sparse provider pool (RentCast's free tier is known to
+# have patchy coverage) isn't given the final say — we also query the next provider
+# and merge, so a broader source (e.g. Apify/Zillow) gets a fair shot at supplying
+# in-budget options RentCast alone didn't have. Only triggers on the searches that
+# would otherwise come back thin/empty; a search that already has enough in-budget
+# results after the first provider costs nothing extra.
+_MIN_IN_BUDGET_TARGET = 3
+
+
+def _attach_per_person_price(listings: list[dict], roommates: int) -> None:
+    """Deterministic, code-computed per-person rent (monthly_price ÷ (roommates+1)),
+    attached in-place so the Analyst/Summarizer relay a ready-made number instead of
+    doing the arithmetic (and formatting) themselves in prose — an LLM asked to state
+    "monthly_price ÷ (roommates+1)" inline in a longer writeup can (and did, in
+    production) apply the split a second time to its own already-divided figure.
+
+    Also attaches `per_person_label`, the FULLY FORMATTED "split N ways" phrase — a
+    prior fix gave the Summarizer just the number and told it to write "split N ways"
+    itself, and it copied the literal "2 ways" from the prompt's example regardless of
+    the real occupant count. Giving it the whole phrase pre-built leaves nothing left
+    to get wrong.
+
+    roommates=0 means solo, so no per-person split applies (fields are None)."""
+    if roommates <= 0:
+        for l in listings:
+            l["per_person_price"] = None
+            l["per_person_label"] = None
+        return
+    occupants = roommates + 1
+    for l in listings:
+        price = l.get("monthly_price")
+        per_person = round(price / occupants) if price else None
+        l["per_person_price"] = per_person
+        l["per_person_label"] = (
+            f"${per_person:,.0f} per person, split {occupants} ways" if per_person is not None else None
+        )
 
 
 def fetch_apartments(
@@ -474,6 +528,8 @@ def fetch_apartments(
     max_budget: float,
     min_bedrooms: int = 0,
     min_bathrooms: float = 0,
+    roommates: int = 0,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """
     Finds apartments matching location, budget, and (optional) layout via a
@@ -482,7 +538,11 @@ def fetch_apartments(
 
     The provider pool is fetched PRICE-UNCAPPED and partitioned by budget here so
     we can surface stretch options and compute the true market average for the
-    requested layout when nothing is in budget.
+    requested layout when nothing is in budget. If the first provider with results
+    doesn't clear `_MIN_IN_BUDGET_TARGET` in-budget listings, the next provider is
+    also queried and the pools are merged (deduped) before partitioning — this
+    guards against a single thin provider (RentCast's free tier especially) silently
+    under-representing what's actually on the market.
 
     Args:
         city: Target city (e.g., 'Austin')
@@ -490,10 +550,18 @@ def fetch_apartments(
         max_budget: Maximum monthly rent (effective/total budget)
         min_bedrooms: Minimum bedrooms (0 = Any)
         min_bathrooms: Minimum bathrooms (0 = Any)
+        roommates: additional occupants beyond the user (0 = solo). Used ONLY to
+            attach a precomputed `per_person_price`/`per_person_label` per listing —
+            never affects which listings are chosen (that's driven by `max_budget`,
+            which the caller already adjusts for per-person budgets via `effective_budget`).
+        tool_context: injected by ADK; used to deterministically record the search
+            outcome (`search_status`) in session state so downstream agents don't
+            have to infer "did we find anything" purely from prose (see agent.py).
 
     Returns one of (JSON string):
       • A list of up to 5 in-budget listings (tagged "over_budget": false), plus
         optionally 1 stretch listing ≤ 15% over budget (tagged "over_budget": true).
+        Each listing includes `per_person_price`/`per_person_label` (both null if roommates=0).
       • {"no_match_in_budget": true, "suggested_budget": <layout market avg>,
          "available_options": [...]} when nothing is in budget.
       • {"count": 0, "message": ...} when no listings exist at all.
@@ -510,30 +578,39 @@ def fetch_apartments(
     global _rentcast_run_count
     _rentcast_run_count = 0
 
-    pool: list[dict] | None = None
-    source = None
+    pool: list[dict] = []
+    sources_used: list[str] = []
     for provider_name, provider_fn in _PROVIDERS:
         try:
             results = provider_fn(city, state, min_bedrooms, min_bathrooms)
-            if results is None:
-                continue  # Provider not configured; try next
-            if len(results) == 0:
-                print(f"   ℹ️  Provider '{provider_name}' returned 0 results. Trying next.")
-                continue
-            pool = results
-            source = provider_name
-            break
         except Exception as e:
             print(f"   ⚠️  Provider '{provider_name}' failed: {e}")
             continue
+        if results is None:
+            continue  # Provider not configured; try next
+        if len(results) == 0:
+            print(f"   ℹ️  Provider '{provider_name}' returned 0 results. Trying next.")
+            continue
+
+        pool = _dedupe_pool(pool + results)
+        sources_used.append(provider_name)
+        in_budget_so_far = sum(1 for l in pool if l["monthly_price"] and l["monthly_price"] <= max_budget)
+        print(f"   🏠 '{provider_name}' contributed {len(results)} listings "
+              f"({len(pool)} pooled, {in_budget_so_far} in-budget so far)")
+
+        if in_budget_so_far >= _MIN_IN_BUDGET_TARGET:
+            break  # enough in-budget options; stop querying further providers (cost control)
+        # else: thin/no in-budget results so far — also try the next provider
 
     if not pool:
+        if tool_context is not None:
+            tool_context.state["search_status"] = "no_results"
         return json.dumps({
             "message": f"No apartments found in {city}, {state} for the requested layout across all providers.",
             "count": 0,
         })
 
-    print(f"   🏠 Listings retrieved from: {source} ({len(pool)} in layout pool)")
+    print(f"   🏠 Combined pool from {', '.join(sources_used)}: {len(pool)} listings")
 
     # Partition the price-uncapped pool by the user's budget.
     in_budget = [l for l in pool if l["monthly_price"] and l["monthly_price"] <= max_budget]
@@ -553,6 +630,9 @@ def fetch_apartments(
             stretch = dict(over_budget[0])
             stretch["over_budget"] = True
             chosen.append(stretch)
+        _attach_per_person_price(chosen, roommates)
+        if tool_context is not None:
+            tool_context.state["search_status"] = "ok"
         return json.dumps(chosen)
 
     # Nothing in budget → report the market average for THIS layout + alternatives.
@@ -561,11 +641,89 @@ def fetch_apartments(
     available = sorted(pool, key=lambda l: l["monthly_price"] or 0)[:5]
     for l in available:
         l["over_budget"] = True
+    _attach_per_person_price(available, roommates)
+    if tool_context is not None:
+        tool_context.state["search_status"] = "no_match_in_budget"
+        tool_context.state["suggested_budget"] = suggested
     return json.dumps({
         "no_match_in_budget": True,
         "suggested_budget": suggested,
         "available_options": available,
     })
+
+
+# ─── Deterministic safety net for the Reviewer/Summarizer status routing ─────
+# `search_status` (written above, in code, at the moment fetch_apartments computes
+# the real outcome) is the ground truth. The Reviewer/Summarizer chain is supposed
+# to relay it correctly via prose markers, but that's LLM instruction-following
+# across two more hops — if it ever collapses a real result into a false
+# "STATUS: NO_RESULTS", these helpers let agent.py rebuild a correct reply from
+# state directly instead of showing the user a false negative. See agent.py's
+# `_summarizer_before_callback`.
+
+def _looks_like_erroneous_no_results(safety_report: str) -> bool:
+    return (safety_report or "").strip().upper().startswith("STATUS: NO_RESULTS")
+
+
+def extract_leading_json_array(text: str) -> list[dict] | None:
+    """Parse the JSON array the Analyst is instructed to emit as the first thing
+    in its dossier (ANALYST_PROMPT STEP 1), ignoring any trailing commute/prose
+    text. Returns None if the dossier doesn't start with a JSON array."""
+    if not text:
+        return None
+    decoder = json.JSONDecoder()
+    try:
+        obj, _ = decoder.raw_decode(text.strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, list) else None
+
+
+def build_fallback_recommendation(state) -> str | None:
+    """
+    Deterministic correction: if `search_status` (set by fetch_apartments) says
+    listings exist but the safety_report the Reviewer produced looks like the
+    erroneous NO_RESULTS bail-out, rebuild a correct message from analyst_dossier
+    directly — no LLM call needed. Returns None when no correction is needed
+    (either the pipeline behaved correctly, or there's nothing to fall back to).
+    """
+    search_status = state.get("search_status")
+    if search_status not in ("ok", "no_match_in_budget"):
+        return None  # genuinely no results, or status was never recorded
+
+    if not _looks_like_erroneous_no_results(state.get("safety_report", "")):
+        return None  # pipeline behaved correctly; nothing to fix
+
+    listings = extract_leading_json_array(state.get("analyst_dossier", "")) or []
+    if not listings:
+        return None  # nothing to fall back to; let the normal error path handle it
+
+    try:
+        reqs = json.loads(state.get("user_requirements") or "{}")
+    except json.JSONDecodeError:
+        reqs = {}
+    city = reqs.get("city", "your area")
+    req_state = reqs.get("state", "")
+    budget = reqs.get("budget")
+
+    if search_status == "no_match_in_budget":
+        suggested = state.get("suggested_budget")
+        budget_str = f"${budget:,.0f}/mo" if budget else "your budget"
+        header = f"Nothing was available within {budget_str} for this search in {city}, {req_state}."
+        if suggested:
+            header += f" The typical market rate for this layout is about ${suggested:,.0f}/mo."
+        header += " Here are the closest available options:"
+    else:
+        header = f"I found {len(listings)} option(s) in {city}, {req_state} — see the listings and map for details."
+
+    lines = [header]
+    for l in listings:
+        price = l.get("monthly_price")
+        addr = l.get("address") or ""
+        tag = " (over budget)" if l.get("over_budget") else ""
+        per_person = f" ({l['per_person_label']})" if l.get("per_person_label") else ""
+        lines.append(f"- {addr} — ${price:,.0f}/mo{per_person}{tag}" if price else f"- {addr}{tag}")
+    return "\n".join(lines)
 
 
 # ─── Requirements seeding (shared by the LLM tool + the structured-intake path) ─

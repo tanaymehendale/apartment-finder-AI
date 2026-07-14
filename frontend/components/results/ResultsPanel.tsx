@@ -83,6 +83,7 @@ export function ResultsPanel({ apartments, landmark, roommates = 0 }: Props) {
                 isHighlighted={hoveredId === apt.id}
                 onHover={setHoveredId}
                 roommates={roommates}
+                landmark={landmark}
               />
             ))}
           </div>

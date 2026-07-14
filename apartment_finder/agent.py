@@ -104,6 +104,37 @@ analyst = LlmAgent(
     output_key="analyst_dossier"
 )
 
+# --- DETERMINISTIC STATUS-ROUTING GUARDS ---
+# `tools.fetch_apartments` records the TRUE search outcome in session state
+# (`search_status`) the moment it computes results — in code, not prose. The
+# Reviewer/Summarizer are still supposed to relay that via the "STATUS: NO_RESULTS"
+# marker in their own text, but that's LLM instruction-following stretched across
+# two more hops, and it can misfire (a stray substring match, or the Summarizer
+# conflating "nothing in budget" with "nothing found"). These callbacks make the
+# code-computed flag win instead of trusting prose for this specific decision.
+
+def _reviewer_before_callback(callback_context):
+    """Skip the Gemini/google_search call entirely for a genuine zero-results
+    search — cheaper (saves a Gemini call) and, unlike the prompt-only early-exit
+    check it replaces, can't misfire on unrelated text in the dossier."""
+    if callback_context.state.get("search_status") == "no_results":
+        callback_context.state["safety_report"] = "STATUS: NO_RESULTS"
+        return types.Content(role="model", parts=[types.Part(text="STATUS: NO_RESULTS")])
+    return None
+
+
+def _summarizer_before_callback(callback_context):
+    """Safety net: if `search_status` says real listings exist but safety_report
+    nonetheless collapsed to the NO_RESULTS bail-out, rebuild the reply from state
+    directly (no LLM call) instead of letting the Summarizer stream a false
+    negative to the user. See tools.build_fallback_recommendation."""
+    fallback = tools.build_fallback_recommendation(callback_context.state)
+    if fallback is None:
+        return None
+    callback_context.state["final_recommendation"] = fallback
+    return types.Content(role="model", parts=[types.Part(text=fallback)])
+
+
 # --- 2. THE REVIEWER AGENT ---
 reviewer = LlmAgent(
     name="reviewer",
@@ -111,7 +142,8 @@ reviewer = LlmAgent(
     description="Checks neighborhood safety.",
     instruction=instructions.REVIEWER_PROMPT,
     tools=[google_search],
-    output_key="safety_report"
+    output_key="safety_report",
+    before_agent_callback=_reviewer_before_callback,
 )
 
 # --- 3. THE SUMMARIZER AGENT ---
@@ -121,6 +153,7 @@ summarizer = LlmAgent(
     description="Compiles research into a final pitch.",
     instruction=instructions.SUMMARIZER_PROMPT,
     output_key="final_recommendation",
+    before_agent_callback=_summarizer_before_callback,
 )
 
 # --- THE RESEARCH TEAM ---
