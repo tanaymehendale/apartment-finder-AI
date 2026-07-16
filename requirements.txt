@@ -8,4 +8,6 @@ httpx
 fastapi
 uvicorn[standard]
 polyline
+langfuse
+openinference-instrumentation-google-adk
 # google-cloud-aiplatform[adk,agent_engines]  # Uncomment for Cloud Run / Vertex AI Agent Engine deployment

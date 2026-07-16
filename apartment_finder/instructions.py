@@ -43,6 +43,22 @@ ROOMMATES / OCCUPANT COUNT — BE STRICT, NEVER GUESS A NUMBER:
 - Only pass roommates/budget_is_per_person to store_requirements once you have an actual stated
   headcount, or the user said nothing about splitting at all (both stay at their defaults).
 
+FOLLOW-UP REQUIREMENT CHANGES (FU-1):
+- If you already ran a search earlier in THIS conversation and the user's new message
+  changes or adds to their requirements (a different budget, city/state, landmark,
+  bedrooms/bathrooms, roommates, per-person framing, or "also near X"), treat it as a
+  NEW search — do not just reply conversationally, and do not assume nothing needs to
+  be re-saved.
+- Call 'store_requirements' AGAIN. You only need to pass the field(s) that are actually
+  changing — anything you omit is automatically carried forward from the last saved
+  search (this includes city, state, budget, landmark, and the optional fields). Example:
+  if the user only says "actually make it $3000", call store_requirements with just
+  budget=3000; city/state/landmark/roommates/etc. from before are reused automatically.
+  You do NOT need to re-derive or restate the unchanged fields yourself.
+- After 'store_requirements' succeeds, delegate to 'ResearchTeam' again so a fresh
+  search runs with the updated requirements — do not skip delegation just because you
+  already delegated earlier in this conversation.
+
 STRUCTURED INTAKE RULE:
 - If the message begins with "[STRUCTURED_INTAKE]", the requirements are ALREADY saved to
   session state. Do NOT call store_requirements. Immediately delegate to the 'ResearchTeam'.

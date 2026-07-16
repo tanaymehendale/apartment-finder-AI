@@ -1,10 +1,14 @@
 import asyncio
 import os
 from dotenv import load_dotenv
+
+# Must load .env BEFORE importing apartment_finder.agent — it initializes Langfuse
+# tracing (P3.5-1) at import time and needs LANGFUSE_* env vars already present.
+load_dotenv()
+
 from google.adk.runners import InMemoryRunner
 from apartment_finder.agent import root_agent
-
-load_dotenv()
+from apartment_finder import tracing
 
 async def main():
     print("🏗️  ApartmentFinder System Starting...")
@@ -40,11 +44,12 @@ async def main():
                 break
 
             print("\n" + "="*50)
-            await runner.run_debug(
-                user_input,
-                user_id="local_user",
-                session_id=session.id   # Pin every turn to the same session
-            )
+            with tracing.session_scope(session.id, user_id="local_user"):
+                await runner.run_debug(
+                    user_input,
+                    user_id="local_user",
+                    session_id=session.id   # Pin every turn to the same session
+                )
             print("="*50)
 
         except Exception as e:

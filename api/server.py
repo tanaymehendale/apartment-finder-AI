@@ -5,14 +5,19 @@ import json
 import os
 import polyline as polyline_codec
 from dotenv import load_dotenv
+
+# Must load .env BEFORE importing api.session_manager / apartment_finder — that
+# import chain reaches apartment_finder.agent, which initializes Langfuse tracing
+# (P3.5-1) at import time and needs LANGFUSE_* env vars already present.
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from api import session_manager
 from apartment_finder.tools import _get_gmaps_client
-
-load_dotenv()
+from apartment_finder import tracing
 
 app = FastAPI(title="ApartmentFinder API")
 
@@ -109,4 +114,5 @@ async def health():
         "status": "ok" if not missing else "degraded",
         "missing_keys": missing,
         "listing_provider": provider,
+        "tracing_enabled": tracing.enabled,
     }

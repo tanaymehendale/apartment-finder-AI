@@ -11,6 +11,7 @@ from google.adk.events import Event, EventActions
 from google.genai import types
 from apartment_finder.agent import root_agent
 from apartment_finder.tools import _compute_requirements
+from apartment_finder import tracing
 
 # In-memory registry: session_id → (runner, adk_session_id, user_id)
 _sessions: dict[str, tuple[InMemoryRunner, str, str]] = {}
@@ -146,82 +147,85 @@ async def stream_message(
 
     _cancel_flags[session_id] = False  # reset on each new message
 
-    for attempt in range(MAX_RETRIES):
-        seen_authors: set[str] = set()
+    # P3.5-1: tag every span from this turn's agent run with the conversation's
+    # session_id (no-op when Langfuse tracing isn't enabled).
+    with tracing.session_scope(session_id, user_id=user_id):
+        for attempt in range(MAX_RETRIES):
+            seen_authors: set[str] = set()
 
-        try:
-            async for event in runner.run_async(
-                user_id=user_id,
-                session_id=adk_session_id,
-                new_message=new_message,
-            ):
-                if _cancel_flags.get(session_id):
-                    yield {"type": "done"}
-                    return
+            try:
+                async for event in runner.run_async(
+                    user_id=user_id,
+                    session_id=adk_session_id,
+                    new_message=new_message,
+                ):
+                    if _cancel_flags.get(session_id):
+                        yield {"type": "done"}
+                        return
 
-                author = getattr(event, "author", None) or ""
+                    author = getattr(event, "author", None) or ""
 
-                # Emit a status event the first time we see each sub-agent
-                if author and author != "user" and author not in seen_authors:
-                    seen_authors.add(author)
-                    label, step = AGENT_LABELS.get(author, (author.title(), f"{author} is working…"))
-                    last_active_agent = label
-                    yield {"type": "status", "agent": label, "step": step}
+                    # Emit a status event the first time we see each sub-agent
+                    if author and author != "user" and author not in seen_authors:
+                        seen_authors.add(author)
+                        label, step = AGENT_LABELS.get(author, (author.title(), f"{author} is working…"))
+                        last_active_agent = label
+                        yield {"type": "status", "agent": label, "step": step}
 
-                # Stream text tokens; also detect tool calls for fallback status events.
-                # ADK sub-agents don't always surface their name in event.author, so we
-                # infer Analyst / Reviewer activity from which tool is being invoked.
-                content = event.content
-                if content and content.parts:
-                    for part in content.parts:
-                        fn_call = getattr(part, "function_call", None)
-                        if fn_call:
-                            fn_name = getattr(fn_call, "name", "") or ""
-                            if fn_name in ("fetch_apartments", "check_commutes") and "analyst" not in seen_authors:
-                                seen_authors.add("analyst")
-                                label, step = AGENT_LABELS["analyst"]
-                                last_active_agent = label
-                                yield {"type": "status", "agent": label, "step": step}
-                            elif fn_name == "google_search" and "reviewer" not in seen_authors:
-                                seen_authors.add("reviewer")
-                                label, step = AGENT_LABELS["reviewer"]
-                                last_active_agent = label
-                                yield {"type": "status", "agent": label, "step": step}
+                    # Stream text tokens; also detect tool calls for fallback status events.
+                    # ADK sub-agents don't always surface their name in event.author, so we
+                    # infer Analyst / Reviewer activity from which tool is being invoked.
+                    content = event.content
+                    if content and content.parts:
+                        for part in content.parts:
+                            fn_call = getattr(part, "function_call", None)
+                            if fn_call:
+                                fn_name = getattr(fn_call, "name", "") or ""
+                                if fn_name in ("fetch_apartments", "check_commutes") and "analyst" not in seen_authors:
+                                    seen_authors.add("analyst")
+                                    label, step = AGENT_LABELS["analyst"]
+                                    last_active_agent = label
+                                    yield {"type": "status", "agent": label, "step": step}
+                                elif fn_name == "google_search" and "reviewer" not in seen_authors:
+                                    seen_authors.add("reviewer")
+                                    label, step = AGENT_LABELS["reviewer"]
+                                    last_active_agent = label
+                                    yield {"type": "status", "agent": label, "step": step}
 
-                        if part.text:
-                            yield {"type": "token", "content": part.text, "author": author}
+                            if part.text:
+                                yield {"type": "token", "content": part.text, "author": author}
 
-            # Successful run — exit retry loop
-            break
+                # Successful run — exit retry loop
+                break
 
-        except Exception as exc:
-            error_msg = str(exc)
-            is_rate_limit = "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg
+            except Exception as exc:
+                error_msg = str(exc)
+                is_rate_limit = "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg
 
-            # 429 / RESOURCE_EXHAUSTED = free-tier RPM limit → worth retrying the whole
-            # pipeline after a visible backoff countdown.
-            if is_rate_limit and attempt < MAX_RETRIES - 1:
-                delay_match = re.search(r"retry in (\d+)", error_msg, re.IGNORECASE)
-                wait_seconds = int(delay_match.group(1)) if delay_match else 35
+                # 429 / RESOURCE_EXHAUSTED = free-tier RPM limit → worth retrying the whole
+                # pipeline after a visible backoff countdown.
+                if is_rate_limit and attempt < MAX_RETRIES - 1:
+                    delay_match = re.search(r"retry in (\d+)", error_msg, re.IGNORECASE)
+                    wait_seconds = int(delay_match.group(1)) if delay_match else 35
 
-                # Stream countdown events every 5s to keep SSE alive and update the UI
-                remaining = wait_seconds
-                while remaining > 0:
-                    yield {"type": "waiting", "seconds": remaining, "agent": last_active_agent}
-                    sleep_for = min(5, remaining)
-                    await asyncio.sleep(sleep_for)
-                    remaining -= sleep_for
+                    # Stream countdown events every 5s to keep SSE alive and update the UI
+                    remaining = wait_seconds
+                    while remaining > 0:
+                        yield {"type": "waiting", "seconds": remaining, "agent": last_active_agent}
+                        sleep_for = min(5, remaining)
+                        await asyncio.sleep(sleep_for)
+                        remaining -= sleep_for
 
-                # Loop back for retry (seen_authors resets at top of loop)
-                continue
+                    # Loop back for retry (seen_authors resets at top of loop)
+                    continue
 
-            # Any other terminal error — including a downstream Gemini 503 "model
-            # overloaded" on the Reviewer — must NOT discard the run. Record it and
-            # break, so we still emit whatever partial results the Analyst already
-            # wrote to session state below. Re-running would waste provider quota
-            # redoing Analyst work that already succeeded.
-            run_error = error_msg
-            break
+                # Any other terminal error — including a downstream Gemini 503 "model
+                # overloaded" on the Reviewer — must NOT discard the run. Record it and
+                # break, so we still emit whatever partial results the Analyst already
+                # wrote to session state below. Re-running would waste provider quota
+                # redoing Analyst work that already succeeded.
+                run_error = error_msg
+                break
 
     # Emit session state (partial OR complete) so the frontend can render cards even when
     # a downstream stage failed. The Analyst writes `analyst_dossier` BEFORE the Reviewer

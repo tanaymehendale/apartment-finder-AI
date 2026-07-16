@@ -9,6 +9,13 @@ from google.adk.tools import FunctionTool
 from google.adk.tools import google_search
 from . import instructions
 from . import tools
+from . import tracing
+
+# P3.5-1: instrument the agent tree for Langfuse before any agent runs. Must come
+# after environment variables are loaded — `adk web` loads .env before importing
+# this module; main.py / api/server.py call load_dotenv() before importing it too
+# (see the ordering note in each). No-op if Langfuse keys aren't set.
+tracing.init()
 
 # Retry policy for the Gemini-backed Reviewer. We deliberately keep ONLY 429 here:
 # exp_base=7 makes 429 (free-tier RPM quota) retries wait 7→49→343s so they land

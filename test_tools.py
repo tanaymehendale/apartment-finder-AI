@@ -375,6 +375,55 @@ def test_pending_optional_foldin():
     print(f"   ✅ proximity + per-person + beds folded in; effective_budget=${reqs['effective_budget']}")
 
 
+# ─── Offline: FU-1 follow-up requirement changes carry forward prior state ───
+
+def test_followup_change_carries_forward_unstated_fields():
+    print("\n🧪 FU-1: store_requirements carries forward unstated fields on a follow-up call")
+    from apartment_finder.tools import store_requirements
+    orig = tools._get_gmaps_client
+    tools._get_gmaps_client = lambda: (_ for _ in ()).throw(RuntimeError("offline"))
+    try:
+        state = {}
+        ctx = _FakeToolContext(state)
+        # First search: full required fields + roommates/proximity via pending_optional.
+        state["pending_optional"] = json.dumps({
+            "roommates": 1, "budget_is_per_person": True,
+            "proximity": [{"label": "Caltrain", "kind": "named"}],
+        })
+        msg1 = store_requirements("Austin", "TX", 2000, "UT Austin", ctx)
+        assert "saved" in msg1.lower(), msg1
+        reqs1 = json.loads(state["user_requirements"])
+        assert reqs1["city"] == "Austin" and reqs1["roommates"] == 1
+        assert reqs1["effective_budget"] == 4000, reqs1
+
+        # Follow-up: user only changes the budget ("actually make it $3000") — the
+        # Manager should be able to call store_requirements with ONLY budget set.
+        del state["pending_optional"]  # no fresh RequirementCards submission this turn
+        msg2 = store_requirements(budget=3000, tool_context=ctx)
+        assert "saved" in msg2.lower(), msg2
+        reqs2 = json.loads(state["user_requirements"])
+        assert reqs2["city"] == "Austin" and reqs2["state"] == "TX", reqs2
+        assert reqs2["landmark"] == "UT Austin", reqs2
+        assert reqs2["budget"] == 3000, reqs2
+        assert reqs2["effective_budget"] == 6000, reqs2         # 3000/person × 2, carried roommates=1
+        assert reqs2["roommates"] == 1, reqs2                    # carried forward, not reset
+        assert len(reqs2["proximity"]) == 1, reqs2                # carried forward
+    finally:
+        tools._get_gmaps_client = orig
+    print("   ✅ budget-only follow-up keeps city/state/landmark/roommates/proximity from before")
+
+
+def test_followup_missing_everything_returns_message():
+    print("\n🧪 FU-1: store_requirements with nothing saved yet and no fields passed asks for info")
+    from apartment_finder.tools import store_requirements
+    state: dict = {}
+    ctx = _FakeToolContext(state)
+    msg = store_requirements(tool_context=ctx)
+    assert "missing" in msg.lower(), msg
+    assert "user_requirements" not in state, "must not persist an incomplete search"
+    print(f"   ✅ {msg[:60]}…")
+
+
 # ─── Offline: deterministic status-routing guard ─────────────────────────────
 # search_status is written by fetch_apartments in code; build_fallback_recommendation
 # and the reviewer/summarizer before_agent_callbacks in agent.py trust it over prose.
@@ -577,6 +626,8 @@ if __name__ == "__main__":
     test_transit_type_mapping_offline()
     test_transit_branch_offline()
     test_pending_optional_foldin()
+    test_followup_change_carries_forward_unstated_fields()
+    test_followup_missing_everything_returns_message()
     test_build_fallback_recommendation_corrects_false_negative()
     test_build_fallback_recommendation_noop_when_consistent()
     test_reviewer_callback_skips_on_true_no_results()

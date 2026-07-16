@@ -833,11 +833,11 @@ def _seed_requirements(state_dict, **kwargs) -> dict:
 
 
 def store_requirements(
-    city: str,
-    state: str,
-    budget: float,
-    landmark: str,
-    tool_context: ToolContext,
+    city: str | None = None,
+    state: str | None = None,
+    budget: float | None = None,
+    landmark: str | None = None,
+    tool_context: ToolContext = None,
     min_bedrooms: int = 0,
     min_bathrooms: float = 0,
     roommates: int = 0,
@@ -847,15 +847,45 @@ def store_requirements(
     Saves the user's housing requirements to session state so the Research Team can
     access them. Call this before delegating to ResearchTeam.
 
-    Required: city, state (2-letter US code), budget, landmark.
-    Optional (default 0/False = 'Any', no filter): min_bedrooms, min_bathrooms,
-    roommates, budget_is_per_person.
+    Required (on the FIRST search of a conversation): city, state (2-letter US code),
+    budget, landmark. Optional (default 0/False = 'Any', no filter): min_bedrooms,
+    min_bathrooms, roommates, budget_is_per_person.
+
+    FU-1 (follow-up searches): if requirements were already saved earlier in this
+    conversation and the user changes only some of them (e.g. "make it $3000"), you
+    may omit any field that didn't change — every field left unset here is carried
+    forward from the previously saved requirements automatically. Only fields the
+    user is actively restating/changing need to be passed.
     """
+    prev: dict = {}
+    prev_raw = tool_context.state.get("user_requirements")
+    if prev_raw:
+        try:
+            prev = json.loads(prev_raw) if isinstance(prev_raw, str) else dict(prev_raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            prev = {}
+
+    # FU-1: a follow-up call may omit unchanged required fields — fall back to the
+    # previous search's values so a one-field change ("make it $3000") doesn't force
+    # the Manager to perfectly recall/restate everything else from the conversation.
+    city = city or prev.get("city")
+    state = state or prev.get("state")
+    budget = budget if budget is not None else prev.get("budget")
+    landmark = landmark or prev.get("landmark")
+    if not (city and state and budget is not None and landmark):
+        return (
+            "Missing required information: city, state, budget, and landmark are "
+            "all needed to search. Please ask the user for the missing field(s)."
+        )
+
     # P2-5: fold in optional preferences the F3 bridge seeded from the RequirementCards
     # UI (`pending_optional`). The LLM only parses the 4 required fields from free text;
     # structured optional fields — especially `proximity`, which the LLM can't reliably
     # pass as a nested list — are applied here deterministically. An explicit non-default
-    # value supplied by the LLM (because the user restated it in text) wins over the card.
+    # value supplied by the LLM (because the user restated it in text) wins over the card,
+    # which in turn wins over the previous search's value (FU-1 carry-forward). Note this
+    # means an explicit reset to "Any" (0/False) can't be distinguished from "not restated
+    # this turn" — same accepted trade-off as the pending_optional fold-in above.
     pending: dict = {}
     raw = tool_context.state.get("pending_optional")
     if raw:
@@ -864,11 +894,19 @@ def store_requirements(
         except (json.JSONDecodeError, TypeError, ValueError):
             pending = {}
 
-    min_bedrooms = int(min_bedrooms or 0) or int(pending.get("min_bedrooms") or 0)
-    min_bathrooms = float(min_bathrooms or 0) or float(pending.get("min_bathrooms") or 0)
-    roommates = int(roommates or 0) or int(pending.get("roommates") or 0)
-    budget_is_per_person = bool(budget_is_per_person) or bool(pending.get("budget_is_per_person"))
-    proximity = pending.get("proximity") or []
+    min_bedrooms = (
+        int(min_bedrooms or 0) or int(pending.get("min_bedrooms") or 0) or int(prev.get("min_bedrooms") or 0)
+    )
+    min_bathrooms = (
+        float(min_bathrooms or 0) or float(pending.get("min_bathrooms") or 0) or float(prev.get("min_bathrooms") or 0)
+    )
+    roommates = (
+        int(roommates or 0) or int(pending.get("roommates") or 0) or int(prev.get("roommates") or 0)
+    )
+    budget_is_per_person = (
+        bool(budget_is_per_person) or bool(pending.get("budget_is_per_person")) or bool(prev.get("budget_is_per_person"))
+    )
+    proximity = pending.get("proximity") or prev.get("proximity") or []
 
     result = _seed_requirements(
         tool_context.state,
