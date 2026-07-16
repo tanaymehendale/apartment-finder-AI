@@ -11,21 +11,43 @@ from dotenv import load_dotenv
 # (P3.5-1) at import time and needs LANGFUSE_* env vars already present.
 load_dotenv()
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from api import session_manager
+from apartment_finder import tools, tracing
 from apartment_finder.tools import _get_gmaps_client
-from apartment_finder import tracing
 
-app = FastAPI(title="ApartmentFinder API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Cloud Run SIGTERMs the instance whenever it scales to zero (min-instances=0),
+    # so without this the last buffered spans — often the most interesting ones —
+    # never reach Langfuse. Runs on graceful shutdown; a no-op when tracing is off.
+    tracing.flush()
+
+
+app = FastAPI(title="ApartmentFinder API", lifespan=lifespan)
+
+# The browser talks to this API cross-origin for the SSE chat stream — in dev to
+# bypass Next's buffering proxy, and in production because the deployed frontend
+# (Vercel) points NEXT_PUBLIC_BACKEND_URL straight at Cloud Run to sidestep
+# Vercel's 300s function cap (a long 429-retry run can exceed it). So the deployed
+# frontend's origin MUST be allowed here or every search fails at the preflight.
+# Set ALLOWED_ORIGINS to a comma-separated list, e.g.
+#   ALLOWED_ORIGINS=https://apartment-finder.vercel.app
+_extra_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    # Allow the dev frontend to hit the backend directly (any localhost port) so the
-    # SSE chat stream can bypass Next's buffering proxy. Tighten for production.
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", *_extra_origins],
+    # Dev convenience only: any localhost port. Deployed origins come from
+    # ALLOWED_ORIGINS above — this regex must never be widened to match them.
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_methods=["*"],
     allow_headers=["*"],
@@ -115,4 +137,9 @@ async def health():
         "missing_keys": missing,
         "listing_provider": provider,
         "tracing_enabled": tracing.enabled,
+        # P3.75-2: "file" on an ephemeral filesystem (Cloud Run) means the monthly
+        # quota caps silently reset on every scale-to-zero. Surfaced here so a
+        # misconfigured deploy is visible at a glance rather than discovered via
+        # a surprise Apify bill.
+        "usage_store": tools._USAGE_STORE,
     }

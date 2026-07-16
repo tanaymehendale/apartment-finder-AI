@@ -1,13 +1,33 @@
-google-genai
-google-adk
-litellm
-pandas
-python-dotenv
-googlemaps
-httpx
-fastapi
-uvicorn[standard]
-polyline
-langfuse
-openinference-instrumentation-google-adk
-# google-cloud-aiplatform[adk,agent_engines]  # Uncomment for Cloud Run / Vertex AI Agent Engine deployment
+# PINNED — do not loosen without re-running test_tools.py and a live smoke test.
+#
+# These versions are the ones the agent pipeline was actually built and verified
+# against. This file used to be unpinned, which meant a fresh `pip install` in the
+# Docker image silently resolved DIFFERENT majors than anything that had ever been
+# tested — caught during the first Cloud Run deploy (2026-07-16), where the image
+# came up with google-adk 2.4.0 (vs 1.19.0 tested), litellm 1.92.0 (vs 1.80.5) and
+# openai 2.45.0 (vs 2.8.1). The first symptom was litellm 1.92 needing `orjson`,
+# but the real danger was google-adk: FU-3's deterministic status-routing gate
+# depends on `before_agent_callback` semantics confirmed specifically against
+# 1.19.0, and ADK 2.x is a major bump that could change them silently.
+#
+# Direct dependencies pinned to the tested set; transitive deps resolve under these
+# constraints. (A full lockfile — pip-compile/uv — would be stricter and is worth
+# doing if this ever grows past a demo deployment.)
+
+google-genai==1.52.0
+google-adk==1.19.0
+litellm==1.80.5
+# Transitive via litellm, but pinned explicitly: it drifted 2.8.1 -> 2.45.0 on an
+# unpinned resolve, and it's the actual client behind the Manager/Analyst/Summarizer.
+openai==2.8.1
+python-dotenv==1.2.1
+googlemaps==4.10.0
+httpx==0.28.1
+fastapi==0.118.3
+uvicorn[standard]==0.38.0
+polyline==2.0.4
+langfuse==4.14.0
+openinference-instrumentation-google-adk==0.1.17
+# Durable quota counters when USAGE_STORE=firestore (Cloud Run). Unused with the
+# default USAGE_STORE=file, but cheap to keep installed — imported lazily.
+google-cloud-firestore==2.28.0

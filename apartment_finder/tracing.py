@@ -37,6 +37,14 @@ def init() -> bool:
     OS env) — Langfuse must be configured before any agent code runs, and before
     `openinference` patches ADK's call path. Idempotent; returns whether tracing
     is active.
+
+    NEVER raises. Observability is strictly optional: a bad LANGFUSE_BASE_URL,
+    expired keys, or Langfuse being briefly unreachable must degrade to
+    "tracing off", never take the API down. This is load-bearing on Cloud Run —
+    init() runs on the import path, so an exception here means the container
+    fails to boot at all. (Found exactly that way: a malformed base URL made
+    auth_check() raise httpx.UnsupportedProtocol and killed the whole server at
+    startup.)
     """
     global enabled
     if enabled:
@@ -52,15 +60,44 @@ def init() -> bool:
         print("   ⚠️  Langfuse tracing disabled — `pip install -r requirements.txt` to get the packages.")
         return False
 
-    client = get_client()
-    if not client.auth_check():
-        print("   ⚠️  Langfuse auth check failed (bad keys/host?). Tracing disabled.")
+    try:
+        # auth_check() is a live network call; it's kept because a wrong-keys
+        # warning at boot beats silently losing every trace — but it must not be
+        # able to abort startup, hence the broad catch.
+        client = get_client()
+        if not client.auth_check():
+            print("   ⚠️  Langfuse auth check failed (bad keys/host?). Tracing disabled.")
+            return False
+
+        GoogleADKInstrumentor().instrument()
+    except Exception as e:
+        print(f"   ⚠️  Langfuse tracing disabled — setup failed ({type(e).__name__}: {e}). "
+              "The app continues normally without tracing.")
         return False
 
-    GoogleADKInstrumentor().instrument()
     enabled = True
     print("   📊 Langfuse tracing enabled — traces will appear in your Langfuse project's Traces tab.")
     return True
+
+
+def flush() -> None:
+    """
+    Force-export any buffered spans. Call on process shutdown.
+
+    Langfuse batches spans and exports them on a timer, so a process that dies
+    between flushes loses its most recent traces. That's routine on Cloud Run:
+    with min-instances=0 the instance is SIGTERM'd whenever it scales to zero —
+    which is precisely when the trace of the last (possibly failed, i.e. most
+    interesting) search would otherwise be dropped. Never raises, for the same
+    reason init() doesn't: observability must not break shutdown.
+    """
+    if not enabled:
+        return
+    try:
+        from langfuse import get_client
+        get_client().flush()
+    except Exception as e:
+        print(f"   ⚠️  Langfuse flush failed ({type(e).__name__}: {e}).")
 
 
 def session_scope(session_id: str, user_id: str | None = None):

@@ -12,6 +12,90 @@ from google.adk.tools.tool_context import ToolContext
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 
+# ─── Usage-counter storage backend (P3.75-2) ─────────────────────────────────
+# The RentCast/Places monthly guardrails need a counter that survives a process
+# restart. On a local dev box a JSON file under data/ does that fine. On Cloud Run
+# the filesystem is ephemeral AND per-instance, and the service scales to zero — so
+# a file-backed counter silently resets to 0 several times a day and the monthly
+# caps stop capping anything (the guardrail becomes theater, and the fallback
+# provider — Apify — costs real money).
+#
+# So the backend is pluggable, defaulting to today's exact file behavior:
+#   USAGE_STORE=file       (default) → data/<kind>_usage.json. Dev, CLI, tests.
+#   USAGE_STORE=firestore            → one doc per kind. Cloud Run.
+# The stored shape is identical either way: {"month": "2026-07", "count": 12}.
+#
+# Firestore (not GCS) because at this volume — a single ~33-byte document — both
+# cost $0, so the choice is on correctness: a Firestore document write is atomic,
+# which removes the truncate-then-write torn-read that can currently read a
+# half-written file, hit JSONDecodeError, and silently reset the count to 0.
+_USAGE_STORE = os.getenv("USAGE_STORE", "file").strip().lower()
+_USAGE_FIRESTORE_COLLECTION = os.getenv("USAGE_FIRESTORE_COLLECTION", "apartment_finder_usage")
+_firestore_client = None
+
+
+def _get_firestore_client():
+    global _firestore_client
+    if _firestore_client is None:
+        from google.cloud import firestore  # imported lazily: only needed on Cloud Run
+        _firestore_client = firestore.Client()
+    return _firestore_client
+
+
+def _load_usage(kind: str, usage_file: Path) -> dict:
+    """
+    Read a monthly usage counter. Returns {"month": "%Y-%m", "count": int}.
+
+    A month rollover is implicit: we stamp the CURRENT month and only trust a
+    stored count whose month matches. Anything else (new month, missing record,
+    corrupt JSON, backend unreachable) yields a fresh zeroed counter — fail-open,
+    matching the pre-existing missing-file semantics. `kind` is "rentcast"/"places".
+    """
+    current_month = datetime.now().strftime("%Y-%m")
+    if _USAGE_STORE == "firestore":
+        try:
+            snap = _get_firestore_client().collection(
+                _USAGE_FIRESTORE_COLLECTION
+            ).document(kind).get()
+            data = snap.to_dict() if snap.exists else None
+            if data and data.get("month") == current_month:
+                return {"month": current_month, "count": int(data.get("count", 0))}
+        except Exception as e:
+            # Loud: a silently-zeroed counter is exactly the failure this exists to prevent.
+            print(f"   ⚠️  Firestore usage read failed for '{kind}' ({e}). Treating as 0 this call.")
+        return {"month": current_month, "count": 0}
+
+    if usage_file.exists():
+        try:
+            with open(usage_file) as f:
+                data = json.load(f)
+            if data.get("month") == current_month:
+                return data
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return {"month": current_month, "count": 0}
+
+
+def _save_usage(kind: str, usage: dict, usage_file: Path) -> None:
+    """Persist a monthly usage counter. Never raises — a counter write must not
+    break a search that already spent the API call."""
+    if _USAGE_STORE == "firestore":
+        try:
+            _get_firestore_client().collection(
+                _USAGE_FIRESTORE_COLLECTION
+            ).document(kind).set({"month": usage["month"], "count": int(usage["count"])})
+        except Exception as e:
+            print(f"   ⚠️  Firestore usage write failed for '{kind}' ({e}). Count not persisted.")
+        return
+
+    try:
+        usage_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(usage_file, "w") as f:
+            json.dump(usage, f)
+    except OSError as e:
+        print(f"   ⚠️  Usage file write failed for '{kind}' ({e}). Count not persisted.")
+
+
 # ─── US state validation (50 states + DC) ────────────────────────────────────
 VALID_US_STATES = {
     "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
@@ -280,22 +364,14 @@ _rentcast_run_count = 0  # resets on process restart (i.e., per agent session)
 
 
 def _load_rentcast_usage() -> dict:
-    current_month = datetime.now().strftime("%Y-%m")
-    if _RENTCAST_USAGE_FILE.exists():
-        try:
-            with open(_RENTCAST_USAGE_FILE) as f:
-                data = json.load(f)
-            if data.get("month") == current_month:
-                return data
-        except (json.JSONDecodeError, KeyError):
-            pass
-    return {"month": current_month, "count": 0}
+    # Thin delegate — kept as a zero-arg module-level function because tests
+    # monkeypatch this exact name (see test_tools.py) and the storage backend is
+    # selected inside _load_usage.
+    return _load_usage("rentcast", _RENTCAST_USAGE_FILE)
 
 
 def _save_rentcast_usage(usage: dict) -> None:
-    _RENTCAST_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(_RENTCAST_USAGE_FILE, "w") as f:
-        json.dump(usage, f)
+    _save_usage("rentcast", usage, _RENTCAST_USAGE_FILE)
 
 
 def _fetch_rentcast(city: str, state: str, min_bedrooms: int, min_bathrooms: float) -> list[dict] | None:
@@ -939,22 +1015,12 @@ _places_run_count = 0           # reset at the start of every find_nearby_amenit
 
 
 def _load_places_usage() -> dict:
-    current_month = datetime.now().strftime("%Y-%m")
-    if _PLACES_USAGE_FILE.exists():
-        try:
-            with open(_PLACES_USAGE_FILE) as f:
-                data = json.load(f)
-            if data.get("month") == current_month:
-                return data
-        except (json.JSONDecodeError, KeyError):
-            pass
-    return {"month": current_month, "count": 0}
+    # See _load_rentcast_usage — same delegate pattern, same monkeypatch contract.
+    return _load_usage("places", _PLACES_USAGE_FILE)
 
 
 def _save_places_usage(usage: dict) -> None:
-    _PLACES_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(_PLACES_USAGE_FILE, "w") as f:
-        json.dump(usage, f)
+    _save_usage("places", usage, _PLACES_USAGE_FILE)
 
 
 def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:

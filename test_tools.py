@@ -424,6 +424,121 @@ def test_followup_missing_everything_returns_message():
     print(f"   ✅ {msg[:60]}…")
 
 
+# ─── Offline: P3.75-2 durable usage counters (file | firestore backends) ─────
+# On Cloud Run the filesystem is ephemeral and the service scales to zero, so a
+# file-backed monthly counter silently resets to 0 and the RentCast/Places caps
+# stop capping. These cover the firestore delegate without touching real GCP.
+
+class _FakeSnap:
+    def __init__(self, data):
+        self._data = data
+        self.exists = data is not None
+
+    def to_dict(self):
+        return self._data
+
+
+class _FakeDoc:
+    def __init__(self, store, key):
+        self._store, self._key = store, key
+
+    def get(self):
+        return _FakeSnap(self._store.get(self._key))
+
+    def set(self, data):
+        self._store[self._key] = dict(data)
+
+
+class _FakeFirestore:
+    """Minimal stand-in for google.cloud.firestore.Client — only the
+    .collection(x).document(y).get()/.set() path the usage store uses."""
+    def __init__(self, store, fail=False):
+        self._store, self._fail = store, fail
+
+    def collection(self, _name):
+        if self._fail:
+            raise RuntimeError("firestore unavailable")
+        return self
+
+    def document(self, key):
+        return _FakeDoc(self._store, key)
+
+
+def test_usage_store_firestore_roundtrip():
+    print("\n🧪 P3.75-2: firestore usage store round-trips + respects the month stamp")
+    from datetime import datetime
+    from pathlib import Path
+    backing: dict = {}
+    orig_store, orig_client = tools._USAGE_STORE, tools._get_firestore_client
+    tools._USAGE_STORE = "firestore"
+    tools._get_firestore_client = lambda: _FakeFirestore(backing)
+    try:
+        this_month = datetime.now().strftime("%Y-%m")
+        unused = Path("data/never_touched.json")
+
+        # Nothing stored yet → zeroed counter (fail-open, matches missing-file semantics).
+        assert tools._load_usage("places", unused) == {"month": this_month, "count": 0}
+
+        # Round-trip through the fake Firestore doc.
+        tools._save_usage("places", {"month": this_month, "count": 7}, unused)
+        assert backing["places"] == {"month": this_month, "count": 7}, backing
+        assert tools._load_usage("places", unused)["count"] == 7
+
+        # A counter from a PREVIOUS month must not carry over (implicit rollover).
+        backing["places"] = {"month": "1999-01", "count": 999}
+        assert tools._load_usage("places", unused) == {"month": this_month, "count": 0}
+
+        # The file backend must not have been touched at all.
+        assert not unused.exists(), "firestore mode must not write the local file"
+    finally:
+        tools._USAGE_STORE, tools._get_firestore_client = orig_store, orig_client
+    print(f"   ✅ round-trip=7 · stale month → 0 · no local file written")
+
+
+def test_usage_store_firestore_failure_is_fail_open():
+    print("\n🧪 P3.75-2: firestore outage degrades to 0 and never breaks a search")
+    from datetime import datetime
+    from pathlib import Path
+    orig_store, orig_client = tools._USAGE_STORE, tools._get_firestore_client
+    tools._USAGE_STORE = "firestore"
+    tools._get_firestore_client = lambda: _FakeFirestore({}, fail=True)
+    try:
+        this_month = datetime.now().strftime("%Y-%m")
+        unused = Path("data/never_touched.json")
+        # Read failure → zeroed counter, no exception.
+        assert tools._load_usage("rentcast", unused) == {"month": this_month, "count": 0}
+        # Write failure must NOT raise — the API call was already spent; failing here
+        # would turn a bookkeeping problem into a failed user-facing search.
+        tools._save_usage("rentcast", {"month": this_month, "count": 3}, unused)
+    finally:
+        tools._USAGE_STORE, tools._get_firestore_client = orig_store, orig_client
+    print("   ✅ read → 0 (fail-open) · write swallows the error")
+
+
+def test_usage_store_file_backend_unchanged():
+    print("\n🧪 P3.75-2: default 'file' backend still behaves exactly as before")
+    from datetime import datetime
+    import tempfile
+    from pathlib import Path
+    orig_store = tools._USAGE_STORE
+    tools._USAGE_STORE = "file"
+    try:
+        this_month = datetime.now().strftime("%Y-%m")
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "nested" / "places_usage.json"
+            # Missing file → zeroed (and parent dirs created on save).
+            assert tools._load_usage("places", f) == {"month": this_month, "count": 0}
+            tools._save_usage("places", {"month": this_month, "count": 4}, f)
+            assert f.exists(), "file backend must persist to disk"
+            assert tools._load_usage("places", f)["count"] == 4
+            # Corrupt JSON → zeroed, not a crash (pre-existing torn-read tolerance).
+            f.write_text("{not json")
+            assert tools._load_usage("places", f) == {"month": this_month, "count": 0}
+    finally:
+        tools._USAGE_STORE = orig_store
+    print("   ✅ persists to disk · mkdir -p · corrupt JSON → 0")
+
+
 # ─── Offline: deterministic status-routing guard ─────────────────────────────
 # search_status is written by fetch_apartments in code; build_fallback_recommendation
 # and the reviewer/summarizer before_agent_callbacks in agent.py trust it over prose.
@@ -628,6 +743,9 @@ if __name__ == "__main__":
     test_pending_optional_foldin()
     test_followup_change_carries_forward_unstated_fields()
     test_followup_missing_everything_returns_message()
+    test_usage_store_firestore_roundtrip()
+    test_usage_store_firestore_failure_is_fail_open()
+    test_usage_store_file_backend_unchanged()
     test_build_fallback_recommendation_corrects_false_negative()
     test_build_fallback_recommendation_noop_when_consistent()
     test_reviewer_callback_skips_on_true_no_results()

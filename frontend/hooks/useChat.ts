@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useRef, useEffect } from "react";
-import { createSession, chatStream, type RequirementsPayload } from "@/lib/api";
+import { createSession, chatStream, isSessionAlive, type RequirementsPayload } from "@/lib/api";
 import { parseAnalystDossier, mergeSafetyReport, parseRanking, applyRanking, stripRankingMarker } from "@/lib/parseApartments";
 import type { ChatMessage, AgentStatusEvent, AgentName, Apartment, LandmarkInfo, SSEEvent } from "@/lib/types";
 
@@ -9,6 +9,47 @@ function uid() {
 }
 
 const INTERMEDIATE_AGENTS = new Set(["analyst", "reviewer", "ResearchTeam", "Research Team"]);
+
+// The backend's "this session doesn't exist" signal. It arrives as a normal SSE
+// error event inside a 200 response (api/session_manager.py), so it can't be
+// detected from an HTTP status — it has to be matched on the message.
+const SESSION_LOST_RE = /session not found/i;
+
+type TurnOutcome = "ok" | "session-lost" | "aborted";
+
+const CACHE_PREFIXES = ["apt_messages_", "apt_apartments_", "apt_landmark_", "apt_roommates_"];
+
+/**
+ * Re-key a conversation's cached data from `oldId` to `newId`.
+ *
+ * Used when session recovery mints a fresh backend session for a conversation the
+ * user is already looking at: without this, the sidebar would sprout a duplicate
+ * entry for the same conversation and the old cache keys would be orphaned.
+ */
+function rekeySession(oldId: string, newId: string, fallbackTitle: string) {
+  try {
+    const sessions = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]") as {
+      id: string;
+      title: string;
+      createdAt: string;
+    }[];
+    const existing = sessions.find((s) => s.id === oldId);
+    const next = existing
+      ? sessions.map((s) => (s.id === oldId ? { ...s, id: newId } : s))
+      : [{ id: newId, title: fallbackTitle.slice(0, 60), createdAt: new Date().toISOString() }, ...sessions];
+    localStorage.setItem("apt_sessions", JSON.stringify(next.slice(0, 20)));
+
+    for (const prefix of CACHE_PREFIXES) {
+      const value = localStorage.getItem(`${prefix}${oldId}`);
+      if (value !== null) {
+        localStorage.setItem(`${prefix}${newId}`, value);
+        localStorage.removeItem(`${prefix}${oldId}`);
+      }
+    }
+  } catch {
+    // localStorage unavailable/full — recovery itself still works, so don't block it.
+  }
+}
 
 function buildSessionTitle(userRequirementsJson: string): string | null {
   try {
@@ -32,6 +73,10 @@ export function useChat() {
   // rent split shown on each card.
   const [roommates, setRoommates] = useState<number>(0);
   const sessionIdRef = useRef<string | null>(null);
+  // A restored session id that the backend has since forgotten. Kept so the next
+  // ensureSession() can re-key its sidebar entry/cache onto the fresh id instead
+  // of leaving a duplicate conversation behind.
+  const staleSessionIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -90,34 +135,59 @@ export function useChat() {
     }
   }, []);
 
+  // SESSION RECOVERY (P3.75-1)
+  //
+  // The backend keeps sessions in process memory, and Cloud Run scales to zero —
+  // so a session id cached in localStorage routinely refers to one the backend has
+  // never heard of. Previously that bricked the conversation permanently: the error
+  // was painted into the bubble, sessionIdRef was never cleared, and every retry
+  // re-hit the same dead id. Now a lost session is re-created transparently.
+  //
+  // `replacesId` is the dead session being recovered, if any — its sidebar entry
+  // and cache are re-keyed onto the new id rather than leaving a duplicate behind.
+  // Returns the live session id, or null if the backend is unreachable.
+  const ensureSession = useCallback(
+    async (titleSeed: string, replacesId?: string): Promise<string | null> => {
+      if (sessionIdRef.current) return sessionIdRef.current;
+      // A restored-but-dead session (detected by restoreSession's probe) is
+      // recovered here too, not just one that dies mid-conversation.
+      const supersedes = replacesId ?? staleSessionIdRef.current ?? undefined;
+      try {
+        const id = await createSession();
+        sessionIdRef.current = id;
+        staleSessionIdRef.current = null;
+        if (supersedes) {
+          rekeySession(supersedes, id, titleSeed);
+        } else {
+          const sessions = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]");
+          sessions.unshift({
+            id,
+            title: titleSeed.slice(0, 60),
+            createdAt: new Date().toISOString(),
+          });
+          localStorage.setItem("apt_sessions", JSON.stringify(sessions.slice(0, 20)));
+        }
+        return id;
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
+
   const sendMessage = useCallback(async (userText: string, requirements?: RequirementsPayload) => {
     if (isStreaming || !userText.trim()) return;
 
+    const text = userText.trim();
     const userMsg: ChatMessage = {
       id: uid(),
       role: "user",
-      content: userText.trim(),
+      content: text,
       timestamp: new Date(),
     };
     setMessages((prev) => [...prev, userMsg]);
     setIsStreaming(true);
     setAgentStatus(null);
-
-    if (!sessionIdRef.current) {
-      try {
-        sessionIdRef.current = await createSession();
-        const sessions = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]");
-        sessions.unshift({
-          id: sessionIdRef.current,
-          title: userText.slice(0, 60),
-          createdAt: new Date().toISOString(),
-        });
-        localStorage.setItem("apt_sessions", JSON.stringify(sessions.slice(0, 20)));
-      } catch {
-        setIsStreaming(false);
-        return;
-      }
-    }
 
     const assistantMsgId = uid();
     setMessages((prev) => [
@@ -125,135 +195,149 @@ export function useChat() {
       { id: assistantMsgId, role: "assistant", content: "", timestamp: new Date() },
     ]);
 
-    const abortController = new AbortController();
-    abortRef.current = abortController;
-
     // Only forward a structured payload if it actually carries optional fields;
     // an empty object means "plain free-text search" (skip the structured path).
     const reqs = requirements && Object.keys(requirements).length > 0 ? requirements : undefined;
-    const stream = chatStream(sessionIdRef.current!, userText.trim(), abortController.signal, reqs);
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let analystDossier = "";
-    let safetyReport = "";
-    let receivedContent = false;
-    let currentBubbleId = assistantMsgId;
-    let currentBubbleAuthor: string | null = null;
-    let currentRaw = ""; // unstripped accumulator for the current bubble (to hide the RANKING marker)
 
-    try {
-      while (true) {
-        if (abortController.signal.aborted) break;
-        const { done, value } = await reader.read();
-        if (done) break;
+    // Run one turn against `sessionId`. Returns "session-lost" when the backend
+    // has no such session so the caller can transparently re-create and replay —
+    // see the SESSION RECOVERY note above `ensureSession`.
+    const runTurn = async (sessionId: string): Promise<TurnOutcome> => {
+      const abortController = new AbortController();
+      abortRef.current = abortController;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
+      const stream = chatStream(sessionId, text, abortController.signal, reqs);
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let analystDossier = "";
+      let safetyReport = "";
+      let receivedContent = false;
+      let sessionLost = false;
+      let currentBubbleId = assistantMsgId;
+      let currentBubbleAuthor: string | null = null;
+      let currentRaw = ""; // unstripped accumulator for the current bubble (to hide the RANKING marker)
 
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (!jsonStr) continue;
+      try {
+        while (true) {
+          if (abortController.signal.aborted) break;
+          const { done, value } = await reader.read();
+          if (done) break;
 
-          let event: SSEEvent;
-          try {
-            event = JSON.parse(jsonStr);
-          } catch {
-            continue;
-          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
 
-          if (event.type === "status") {
-            setAgentStatus({ agent: event.agent, step: event.step });
-          } else if (event.type === "waiting") {
-            setAgentStatus({ agent: event.agent as AgentName, step: "waiting" });
-          } else if (event.type === "token") {
-            const isIntermediate = INTERMEDIATE_AGENTS.has(event.author ?? "");
-            if (!isIntermediate && event.content) {
-              receivedContent = true;
-              const tokenAuthor = event.author ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const jsonStr = line.slice(6).trim();
+            if (!jsonStr) continue;
 
-              if (tokenAuthor !== currentBubbleAuthor) {
-                if (currentBubbleAuthor !== null) {
-                  const newId = uid();
-                  currentBubbleId = newId;
-                  setMessages((prev) => [
-                    ...prev,
-                    { id: newId, role: "assistant", content: "", timestamp: new Date() },
-                  ]);
+            let event: SSEEvent;
+            try {
+              event = JSON.parse(jsonStr);
+            } catch {
+              continue;
+            }
+
+            if (event.type === "status") {
+              setAgentStatus({ agent: event.agent, step: event.step });
+            } else if (event.type === "waiting") {
+              setAgentStatus({ agent: event.agent as AgentName, step: "waiting" });
+            } else if (event.type === "token") {
+              const isIntermediate = INTERMEDIATE_AGENTS.has(event.author ?? "");
+              if (!isIntermediate && event.content) {
+                receivedContent = true;
+                const tokenAuthor = event.author ?? "";
+
+                if (tokenAuthor !== currentBubbleAuthor) {
+                  if (currentBubbleAuthor !== null) {
+                    const newId = uid();
+                    currentBubbleId = newId;
+                    setMessages((prev) => [
+                      ...prev,
+                      { id: newId, role: "assistant", content: "", timestamp: new Date() },
+                    ]);
+                  }
+                  currentBubbleAuthor = tokenAuthor;
+                  currentRaw = "";
                 }
-                currentBubbleAuthor = tokenAuthor;
-                currentRaw = "";
-              }
 
-              currentRaw += event.content;
-              const display = stripRankingMarker(currentRaw);
+                currentRaw += event.content;
+                const display = stripRankingMarker(currentRaw);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === currentBubbleId ? { ...m, content: display } : m
+                  )
+                );
+              }
+            } else if (event.type === "error") {
+              // A dead session is recoverable — don't paint it, let the caller
+              // replay on a fresh one. Any other error is real; show it.
+              if (SESSION_LOST_RE.test(event.content ?? "")) {
+                sessionLost = true;
+                continue;
+              }
+              receivedContent = true;
               setMessages((prev) =>
                 prev.map((m) =>
-                  m.id === currentBubbleId ? { ...m, content: display } : m
+                  m.id === currentBubbleId
+                    ? { ...m, content: `⚠️ ${event.content}` }
+                    : m
                 )
               );
-            }
-          } else if (event.type === "error") {
-            receivedContent = true;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === currentBubbleId
-                  ? { ...m, content: `⚠️ ${event.content}` }
-                  : m
-              )
-            );
-          } else if (event.type === "state") {
-            analystDossier = event.analyst_dossier;
-            safetyReport = event.safety_report;
-            const { apartments: parsed } = parseAnalystDossier(analystDossier);
-            const withSafety = mergeSafetyReport(parsed, safetyReport);
-            // Reorder cards/pins to follow the Summarizer's reasoned ranking (its
-            // hidden RANKING marker), so chat, cards, and map agree on the Top Pick.
-            const ranking = parseRanking(event.final_recommendation ?? "");
-            setApartments(applyRanking(withSafety, ranking));
+            } else if (event.type === "state") {
+              analystDossier = event.analyst_dossier;
+              safetyReport = event.safety_report;
+              const { apartments: parsed } = parseAnalystDossier(analystDossier);
+              const withSafety = mergeSafetyReport(parsed, safetyReport);
+              // Reorder cards/pins to follow the Summarizer's reasoned ranking (its
+              // hidden RANKING marker), so chat, cards, and map agree on the Top Pick.
+              const ranking = parseRanking(event.final_recommendation ?? "");
+              setApartments(applyRanking(withSafety, ranking));
 
-            // Extract landmark
-            if (event.landmark_lat != null && event.landmark_lng != null) {
-              setLandmark({
-                name: event.landmark_name ?? "",
-                lat: event.landmark_lat,
-                lng: event.landmark_lng,
-              });
-            }
-
-            // P2-3: extract roommate count for per-person rent display
-            if (event.user_requirements) {
-              try {
-                const r = JSON.parse(event.user_requirements);
-                setRoommates(Number(r.roommates) || 0);
-              } catch {
-                // ignore
+              // Extract landmark
+              if (event.landmark_lat != null && event.landmark_lng != null) {
+                setLandmark({
+                  name: event.landmark_name ?? "",
+                  lat: event.landmark_lat,
+                  lng: event.landmark_lng,
+                });
               }
-            }
 
-            // Update session title from user_requirements
-            if (event.user_requirements && sessionIdRef.current) {
-              const title = buildSessionTitle(event.user_requirements);
-              if (title) {
-                const sessions = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]");
-                const updated = sessions.map((s: { id: string; title: string; createdAt: string }) =>
-                  s.id === sessionIdRef.current ? { ...s, title } : s
-                );
-                localStorage.setItem("apt_sessions", JSON.stringify(updated));
+              // P2-3: extract roommate count for per-person rent display
+              if (event.user_requirements) {
+                try {
+                  const r = JSON.parse(event.user_requirements);
+                  setRoommates(Number(r.roommates) || 0);
+                } catch {
+                  // ignore
+                }
               }
+
+              // Update session title from user_requirements
+              if (event.user_requirements && sessionIdRef.current) {
+                const title = buildSessionTitle(event.user_requirements);
+                if (title) {
+                  const sessions = JSON.parse(localStorage.getItem("apt_sessions") ?? "[]");
+                  const updated = sessions.map((s: { id: string; title: string; createdAt: string }) =>
+                    s.id === sessionIdRef.current ? { ...s, title } : s
+                  );
+                  localStorage.setItem("apt_sessions", JSON.stringify(updated));
+                }
+              }
+            } else if (event.type === "done") {
+              setAgentStatus(null);
             }
-          } else if (event.type === "done") {
-            setAgentStatus(null);
           }
         }
+      } finally {
+        abortRef.current = null;
       }
-    } finally {
-      setIsStreaming(false);
-      setAgentStatus(null);
-      abortRef.current = null;
-      if (!receivedContent && !abortController.signal.aborted) {
+
+      if (abortController.signal.aborted) return "aborted";
+      if (sessionLost) return "session-lost";
+      if (!receivedContent) {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === currentBubbleId
@@ -266,11 +350,49 @@ export function useChat() {
           )
         );
       }
+      return "ok";
+    };
+
+    const paint = (content: string) =>
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantMsgId ? { ...m, content } : m))
+      );
+
+    try {
+      let sessionId = await ensureSession(text);
+      if (!sessionId) {
+        paint("⚠️ Couldn't reach the agent server to start a session. Please try again in a moment.");
+        return;
+      }
+
+      let outcome = await runTurn(sessionId);
+
+      // SESSION RECOVERY: the backend lost this session (Cloud Run scaled to zero
+      // or redeployed — its sessions live in process memory). Mint a fresh one and
+      // replay ONCE, silently. Bounded to a single retry so a genuinely broken
+      // backend surfaces an error instead of looping.
+      if (outcome === "session-lost") {
+        const deadId = sessionIdRef.current;
+        sessionIdRef.current = null;
+        const fresh = await ensureSession(text, deadId ?? undefined);
+        outcome = fresh ? await runTurn(fresh) : "session-lost";
+      }
+
+      if (outcome === "session-lost") {
+        paint(
+          "⚠️ Your previous session expired and I couldn't start a new one. Please reload and try again."
+        );
+      }
+    } finally {
+      setIsStreaming(false);
+      setAgentStatus(null);
+      abortRef.current = null;
     }
-  }, [isStreaming]);
+  }, [isStreaming, ensureSession]);
 
   const resetSession = useCallback(() => {
     sessionIdRef.current = null;
+    staleSessionIdRef.current = null; // starting fresh — nothing to re-key onto
     setMessages([]);
     setApartments([]);
     setAgentStatus(null);
@@ -281,6 +403,18 @@ export function useChat() {
 
   const restoreSession = useCallback((sessionId: string) => {
     sessionIdRef.current = sessionId;
+
+    // The stored id is a *display cache key* first and a live backend handle only
+    // maybe — the backend may have scaled to zero since. Probe it in the
+    // background; if it's dead, drop the ref (keeping the restored transcript on
+    // screen) so the next message transparently starts a fresh session instead of
+    // erroring. Fire-and-forget: never block rendering the conversation on it.
+    void isSessionAlive(sessionId).then((alive) => {
+      if (!alive && sessionIdRef.current === sessionId) {
+        sessionIdRef.current = null;
+        staleSessionIdRef.current = sessionId;
+      }
+    });
 
     const stored = localStorage.getItem(`apt_messages_${sessionId}`);
     if (stored) {
