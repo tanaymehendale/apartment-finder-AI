@@ -34,9 +34,18 @@ async def create_session() -> str:
     """Create a new ADK session and return an opaque session_id."""
     session_id = str(uuid.uuid4())
     runner = InMemoryRunner(agent=root_agent, app_name="apartment_finder")
+    # FU-9: pass our own id as the ADK session_id too, instead of letting
+    # create_session() mint a second, separate internal uuid. Previously the two
+    # ids diverged, and openinference's GoogleADKInstrumentor stamps its "session.id"
+    # span attribute from this ADK-internal id (via runner.run_async(session_id=...))
+    # rather than from Langfuse's propagate_attributes context (the two libraries use
+    # different context-propagation mechanisms, so propagate_attributes never reaches
+    # the instrumentor's ambient-context check) — so Langfuse traces showed a sessionId
+    # no endpoint ever exposes. Using one id everywhere removes the mismatch at the root.
     adk_session = await runner.session_service.create_session(
         app_name="apartment_finder",
         user_id=session_id,
+        session_id=session_id,
     )
     _sessions[session_id] = (runner, adk_session.id, session_id)
     _cancel_flags[session_id] = False

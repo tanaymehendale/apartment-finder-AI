@@ -1043,7 +1043,12 @@ def _parse_origin(origin: str) -> tuple[float, float] | None:
         return None
 
 
-def find_nearby_amenities(origins: list[str], label: str, kind: str = "category") -> str:
+def find_nearby_amenities(
+    origins: list[str],
+    label: str,
+    kind: str = "category",
+    tool_context: ToolContext | None = None,
+) -> str:
     """
     For each listing origin, find the nearest amenity matching `label` and its distance.
     Call this once per proximity preference in user_requirements["proximity"], passing the
@@ -1069,6 +1074,22 @@ def find_nearby_amenities(origins: list[str], label: str, kind: str = "category"
         return json.dumps({"label": label, "kind": kind, "results": []})
     if kind not in ("named", "transit", "category"):
         kind = "category"
+
+    # FU-7: code-level gate, independent of whether the Analyst LLM decides to call this
+    # tool. user_requirements["proximity"] is the one source of truth for what the user
+    # actually asked to be near; a call made despite an empty list spends real Places
+    # quota on a search that never requested it, so it's a no-op rather than a prompt
+    # instruction the model can (and did) ignore.
+    if tool_context is not None:
+        reqs = json.loads(tool_context.state.get("user_requirements") or "{}")
+        proximity = reqs.get("proximity") or []
+        if not proximity:
+            print(f"   ⛔ Skipping find_nearby_amenities('{label}') — proximity list is empty "
+                  "in user_requirements (no Places call spent).")
+            return json.dumps({
+                "label": label, "kind": kind, "results": [],
+                "skipped": "proximity_not_requested",
+            })
 
     # ── Named: one free geocode to a fixed point, then haversine per listing ──
     if kind == "named":
@@ -1161,6 +1182,16 @@ def check_commutes(origins: list[str], destination: str, mode: str = "driving") 
             destinations=[destination],
             mode=mode,
         )
+        # Google's response has no per-row origin identifier (only reverse-geocoded
+        # "origin_addresses", which don't match our lat,lng strings). "rows[i]" is
+        # positionally aligned with "origins[i]" by API contract, but the Analyst LLM
+        # re-emits the listings as a SEPARATE JSON array in its reply and isn't reliably
+        # keeping that array in the same order it built this origins list from — so the
+        # frontend can't trust "row i belongs to listing i". Echo the request's own
+        # origins back so the frontend can match each row to its listing by coordinate
+        # instead of by position (same self-describing pattern find_nearby_amenities
+        # already uses via its per-result "origin" field).
+        result["origins"] = origins
         return json.dumps(result, separators=(',', ':'))
     except Exception as e:
         return json.dumps({"error": True, "code": "MAPS_API_ERROR", "message": str(e)})

@@ -343,6 +343,49 @@ class _FakeToolContext:
         self.state = state
 
 
+def test_find_nearby_amenities_gated_on_empty_proximity():
+    print("\n🧪 FU-7: find_nearby_amenities no-ops (code-level) when proximity is empty")
+    from apartment_finder import tools as t
+    calls = {"n": 0}
+
+    def fake_nearest(lat, lng, query, radius_m=8000.0):
+        calls["n"] += 1
+        return {"name": "Should Not Be Called", "lat": lat, "lng": lng}
+
+    orig_nearest = t._places_category_nearest
+    t._places_category_nearest = fake_nearest
+    try:
+        # proximity: [] — the Analyst should be a no-op even though it made the call.
+        state = {"user_requirements": json.dumps({"proximity": []})}
+        ctx = _FakeToolContext(state)
+        out = json.loads(t.find_nearby_amenities(["30.10,-97.10"], "grocery", "category",
+                                                   tool_context=ctx))
+        assert out["skipped"] == "proximity_not_requested", out
+        assert out["results"] == [], out
+        assert calls["n"] == 0, "must not spend a Places call when proximity is empty"
+
+        # proximity missing entirely (e.g. a bare dict without the key) — same gate.
+        state2 = {"user_requirements": json.dumps({})}
+        ctx2 = _FakeToolContext(state2)
+        out2 = json.loads(t.find_nearby_amenities(["30.10,-97.10"], "grocery", "category",
+                                                    tool_context=ctx2))
+        assert out2["skipped"] == "proximity_not_requested", out2
+        assert calls["n"] == 0
+
+        # proximity non-empty — the call proceeds normally.
+        state3 = {"user_requirements": json.dumps(
+            {"proximity": [{"label": "grocery", "kind": "category"}]})}
+        ctx3 = _FakeToolContext(state3)
+        out3 = json.loads(t.find_nearby_amenities(["30.10,-97.10"], "grocery", "category",
+                                                    tool_context=ctx3))
+        assert "skipped" not in out3, out3
+        assert calls["n"] == 1, "a real proximity request must still spend the call"
+    finally:
+        t._places_category_nearest = orig_nearest
+        t._PLACES_CACHE.clear()
+    print("   ✅ empty/absent proximity skips the Places call; a real request still proceeds")
+
+
 def test_pending_optional_foldin():
     print("\n🧪 P2-5: store_requirements folds in bridge-seeded pending_optional (incl. proximity)")
     from apartment_finder.tools import store_requirements
@@ -740,6 +783,7 @@ if __name__ == "__main__":
     test_proximity_category_guardrail_offline()
     test_transit_type_mapping_offline()
     test_transit_branch_offline()
+    test_find_nearby_amenities_gated_on_empty_proximity()
     test_pending_optional_foldin()
     test_followup_change_carries_forward_unstated_fields()
     test_followup_missing_everything_returns_message()
