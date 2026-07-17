@@ -386,6 +386,48 @@ def test_find_nearby_amenities_gated_on_empty_proximity():
     print("   ✅ empty/absent proximity skips the Places call; a real request still proceeds")
 
 
+class _FakeDistanceMatrixClient:
+    """Records what `destinations` it was called with; returns a trivial fixed row set."""
+    def __init__(self):
+        self.last_destinations = None
+
+    def distance_matrix(self, origins, destinations, mode="driving"):
+        self.last_destinations = destinations
+        return {
+            "rows": [{"elements": [{"status": "OK",
+                                     "duration": {"text": "1 min", "value": 60},
+                                     "distance": {"text": "1 m", "value": 1}}]}
+                     for _ in origins],
+            "origin_addresses": ["fake"] * len(origins),
+            "destination_addresses": ["fake destination"],
+            "status": "OK",
+        }
+
+
+def test_check_commutes_prefers_resolved_landmark_coord():
+    print("\n🧪 check_commutes uses the resolved landmark_lat/landmark_lng, not the raw text")
+    from apartment_finder.tools import check_commutes
+    fake_client = _FakeDistanceMatrixClient()
+    orig = tools._get_gmaps_client
+    tools._get_gmaps_client = lambda: fake_client
+    try:
+        # With a resolved landmark coordinate in state, the free-text destination must
+        # be ignored — Distance Matrix's own text geocoding is what silently sent a real
+        # search to the wrong business address in production (see FU-11).
+        ctx = _FakeToolContext({"landmark_lat": 47.638752, "landmark_lng": -122.140899})
+        check_commutes(["30.10,-97.10"], "HCLTech office, Redmond, WA", "driving", tool_context=ctx)
+        assert fake_client.last_destinations == ["47.638752,-122.140899"], fake_client.last_destinations
+
+        # No resolved coordinate in state (e.g. geocoding failed) — falls back to the
+        # raw text so a commute is still attempted.
+        ctx2 = _FakeToolContext({})
+        check_commutes(["30.10,-97.10"], "HCLTech office, Redmond, WA", "driving", tool_context=ctx2)
+        assert fake_client.last_destinations == ["HCLTech office, Redmond, WA"], fake_client.last_destinations
+    finally:
+        tools._get_gmaps_client = orig
+    print("   ✅ resolved coordinate wins when present; raw text falls back when it's not")
+
+
 def test_pending_optional_foldin():
     print("\n🧪 P2-5: store_requirements folds in bridge-seeded pending_optional (incl. proximity)")
     from apartment_finder.tools import store_requirements
@@ -784,6 +826,7 @@ if __name__ == "__main__":
     test_transit_type_mapping_offline()
     test_transit_branch_offline()
     test_find_nearby_amenities_gated_on_empty_proximity()
+    test_check_commutes_prefers_resolved_landmark_coord()
     test_pending_optional_foldin()
     test_followup_change_carries_forward_unstated_fields()
     test_followup_missing_everything_returns_message()

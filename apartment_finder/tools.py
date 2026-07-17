@@ -1159,7 +1159,12 @@ def find_nearby_amenities(
     return json.dumps({"label": label, "kind": kind, "results": results})
 
 
-def check_commutes(origins: list[str], destination: str, mode: str = "driving") -> str:
+def check_commutes(
+    origins: list[str],
+    destination: str,
+    mode: str = "driving",
+    tool_context: ToolContext | None = None,
+) -> str:
     """
     Calculates distances and commute times from multiple origins to a single destination.
 
@@ -1167,7 +1172,8 @@ def check_commutes(origins: list[str], destination: str, mode: str = "driving") 
         origins: List of "lat,lng" strings (e.g., ["30.26,-97.74", "30.50,-97.60"]).
                  Always use latitude/longitude coordinates — never raw addresses.
         destination: Target landmark or address with city and state appended
-                     (e.g., "Tesla Gigafactory, Austin, TX")
+                     (e.g., "Tesla Gigafactory, Austin, TX"). Only used as a fallback —
+                     see the tool_context note below.
         mode: Transport mode — "driving", "transit", or "walking" (default: "driving")
 
     Returns:
@@ -1175,6 +1181,23 @@ def check_commutes(origins: list[str], destination: str, mode: str = "driving") 
     """
     if not origins:
         return json.dumps({"error": True, "code": "NO_ORIGINS", "message": "No origins provided."})
+
+    # `store_requirements` already resolved the landmark to a precise coordinate via
+    # Places API (New) Text Search (landmark_lat/landmark_lng in session state) — a far
+    # better resolver than what follows. Prefer that coordinate over the free-text
+    # `destination` string: Google's Distance Matrix API does its OWN, much weaker
+    # internal geocoding of a text destination, and for an ambiguous business name
+    # (e.g. "HCLTech office, Redmond, WA") it can silently resolve to a wrong, unrelated
+    # address that happens to share a name/word — verified live: Distance Matrix
+    # resolved that exact query to a different business ("Office, 15325 Redmond Wy")
+    # several km from the real office, corrupting every listing's commute distance.
+    # Passing the pre-resolved lat,lng sidesteps Distance Matrix's own geocoding entirely.
+    if tool_context is not None:
+        lat = tool_context.state.get("landmark_lat")
+        lng = tool_context.state.get("landmark_lng")
+        if lat is not None and lng is not None:
+            destination = f"{lat},{lng}"
+
     try:
         client = _get_gmaps_client()
         result = client.distance_matrix(
