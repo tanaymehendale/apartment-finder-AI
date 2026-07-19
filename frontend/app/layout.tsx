@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AuthGate } from "@/components/AuthGate";
 
 export const metadata: Metadata = {
   title: "ApartmentFinder AI",
@@ -13,7 +14,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="h-full">
-      <body className="h-full">{children}</body>
+      <body className="h-full">
+        <AuthGate>{children}</AuthGate>
+      </body>
     </html>
   );
 }

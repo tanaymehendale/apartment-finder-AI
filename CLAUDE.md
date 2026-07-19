@@ -48,6 +48,46 @@ python test_mcp.py             # Validates Google Maps MCP connectivity (legacy;
   [Langfuse](https://langfuse.com) tracing at import time (via `GoogleADKInstrumentor` — see
   Observability section below). Omitting them is a clean no-op; nothing else in the app depends on
   these vars. `/api/health` reports `tracing_enabled` so you can confirm at a glance.
+- `OWNER_EMAIL` — optional (Phase 5, partial — replaces Phase 3.9's throwaway `ACCESS_KEY` gate).
+  Single-owner Firebase Auth: when set, `api/server.py`'s `auth_gate` middleware rejects every
+  route except `/api/health` unless the request carries `Authorization: Bearer <Firebase ID
+  token>` whose decoded, verified email matches this value exactly (case-insensitive) **and**
+  `email_verified` is true. Still single-owner access, not open registration — per-user API keys
+  are a separate, deferred piece (see Phase 5 in the backlog). Unset (the local-dev default) is a
+  clean no-op — every route is open, same convention as the Langfuse vars above. Verification uses
+  `google-auth`'s `google.oauth2.id_token.verify_firebase_token` (lighter than the full
+  `firebase-admin` SDK — only fetches Google's public certs over HTTPS, no service-account
+  credential needed) with `audience=FIREBASE_PROJECT_ID`; run off the event loop via
+  `asyncio.to_thread` since the underlying HTTP call is synchronous.
+- `FIREBASE_PROJECT_ID` — required alongside `OWNER_EMAIL`. The Firebase/GCP project id, used as
+  the JWT audience when verifying ID tokens. Same value as `NEXT_PUBLIC_FIREBASE_PROJECT_ID` below.
+- Frontend (`NEXT_PUBLIC_*`, build-time inlined like `NEXT_PUBLIC_BACKEND_URL` — see Deployment):
+  `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`,
+  `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID` — the Firebase Web app config
+  from Firebase Console → Project Settings → Your apps (not secret; Firebase's own docs treat this
+  as safe to ship client-side, since the real access boundary is the backend's token verification,
+  not hiding this config). `NEXT_PUBLIC_OWNER_EMAIL` — same value as the backend's `OWNER_EMAIL`,
+  used only for a fast client-side "wrong account" message in `AuthGate`; the backend check is
+  always authoritative.
+  - `frontend/lib/firebase.ts` initializes the Firebase app/`auth` singleton (or leaves both `null`
+    when `NEXT_PUBLIC_FIREBASE_API_KEY` is unset — local dev needs zero Firebase setup).
+  - `frontend/components/AuthGate.tsx` wraps the whole app (`app/layout.tsx`) and redirects a
+    logged-out visitor to `/login` — UX only, not the enforcement boundary; a visitor could bypass
+    this component entirely and still couldn't reach the backend without a token from the owner's
+    account. It also shows a distinct "restricted to its owner" screen (with sign-out) for a
+    signed-in *non*-owner account, rather than bouncing them back through the login page.
+  - `frontend/app/login/page.tsx` — Google sign-in + email/password, no public sign-up UI (the
+    owner provisions their own account once via Firebase Console, or auto-provisions on first
+    Google sign-in).
+  - `frontend/lib/api.ts`'s `authHeaders()` reads the current user's ID token
+    (`getIdToken()` — auto-refreshes transparently) and returns it as an `Authorization: Bearer`
+    header, merged into every backend call (including the two built outside `lib/api.ts` —
+    `MapView.tsx`'s directions fetch). `chatStream` gives 401/403 their own distinct SSE error
+    messages so `useChat.ts`'s dead-session recovery (`SESSION_LOST_RE`) never mistakes an auth
+    failure for a lost session and retries pointlessly.
+  - This whole layer (`frontend/lib/firebase.ts`, `frontend/components/AuthGate.tsx`,
+    `frontend/app/login/`, the `authHeaders()` plumbing, `auth_gate` in `api/server.py`) is what
+    Phase 5's future multi-user/BYO-API-key work would build on top of, not replace outright.
 
 **There is no offline CSV fallback.** At least one listing provider (`RENTCAST_API_KEY` or
 `APIFY_API_KEY`) must be set; otherwise `/api/health` reports `degraded` and searches return
@@ -177,10 +217,13 @@ Vercel before building, not after.
 # cold start ≈ 2.8s import). Pre-warm before a demo with --min-instances=1, then set back to 0.
 gcloud run deploy apartment-finder-api --source . --region us-central1 \
   --min-instances=0 --max-instances=1 --timeout=900 --memory=1Gi \
-  --set-env-vars USAGE_STORE=firestore,ALLOWED_ORIGINS=https://<your-app>.vercel.app \
+  --set-env-vars USAGE_STORE=firestore,ALLOWED_ORIGINS=https://<your-app>.vercel.app,\
+OWNER_EMAIL=<owner's email>,FIREBASE_PROJECT_ID=<firebase project id> \
   --set-secrets GOOGLE_API_KEY=...:latest,OPENAI_API_KEY=...:latest,GOOGLE_MAPS_API_KEY=...:latest,\
 RENTCAST_API_KEY=...:latest,APIFY_API_KEY=...:latest,LANGFUSE_PUBLIC_KEY=...:latest,LANGFUSE_SECRET_KEY=...:latest
 ```
+`OWNER_EMAIL`/`FIREBASE_PROJECT_ID` are plain env vars, not secrets (Secret Manager is for the API
+keys above) — an email address and a project id aren't sensitive on their own.
 `--timeout=900` (not the 300s default): the 429-retry path can outlast 5 minutes.
 `/api/health` reports `usage_store` and `tracing_enabled` so a misconfigured deploy is visible at a
 glance rather than discovered via a surprise bill.
@@ -198,7 +241,11 @@ docker run --rm -e PORT=8080 -p 8080:8080 --env-file <(python -c \
 (python-dotenv strips them, which is why it works locally). Render it through dotenv first, as above.
 
 **Vercel:** root directory `frontend/`; set `BACKEND_URL` (used by `next.config.mjs` rewrites for
-the short endpoints) **and** `NEXT_PUBLIC_BACKEND_URL` (Cloud Run URL, for the direct SSE stream).
+the short endpoints) **and** `NEXT_PUBLIC_BACKEND_URL` (Cloud Run URL, for the direct SSE stream),
+plus the five Firebase Auth vars from the Environment Variables section above
+(`NEXT_PUBLIC_FIREBASE_API_KEY`/`AUTH_DOMAIN`/`PROJECT_ID`/`APP_ID`, `NEXT_PUBLIC_OWNER_EMAIL`) —
+all `NEXT_PUBLIC_*`, so they must be set before Vercel builds, same build-time-inlining caveat as
+`NEXT_PUBLIC_BACKEND_URL`.
 
 **Known gaps (deliberate, pre-existing):** the counters' read-modify-write can lose an update under
 concurrency (Firestore fixes torn reads, not lost updates — a real fix needs `firestore.Increment`

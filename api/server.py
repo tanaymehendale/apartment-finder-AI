@@ -1,6 +1,7 @@
 """
 FastAPI server — exposes the ADK apartment finder agent over HTTP with SSE streaming.
 """
+import asyncio
 import json
 import os
 import polyline as polyline_codec
@@ -12,9 +13,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
 from api import session_manager
 from apartment_finder import tools, tracing
@@ -31,6 +34,55 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ApartmentFinder API", lifespan=lifespan)
+
+# Phase 5 (partial) — single-owner Firebase Auth gate, replacing Phase 3.9's
+# shared-secret ACCESS_KEY. Every route except /api/health requires a Firebase ID
+# token (`Authorization: Bearer <token>`, minted client-side by frontend/lib/
+# firebase.ts) whose decoded, verified email matches OWNER_EMAIL exactly — this
+# is still single-owner access, not open registration; per-user API keys are a
+# separate, deferred piece. No-op when OWNER_EMAIL isn't set (local dev needs no
+# config), same convention as tracing.init()/the old ACCESS_KEY. Registered
+# BEFORE CORSMiddleware below so CORS stays the outermost middleware and answers
+# preflight OPTIONS requests itself — this gate never sees them.
+_OWNER_EMAIL = os.getenv("OWNER_EMAIL")
+_FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
+# Module-level so the fetched Google public-cert cache persists across requests
+# on a warm instance instead of being refetched every call.
+_google_auth_request = google_requests.Request()
+
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    if _OWNER_EMAIL and request.url.path != "/api/health":
+        authz = request.headers.get("authorization", "")
+        token = authz[7:].strip() if authz.lower().startswith("bearer ") else ""
+        if not token:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        try:
+            # verify_firebase_token is sync (backed by the `requests` library) —
+            # run it off the event loop so one slow cert fetch can't stall every
+            # other in-flight request on this instance.
+            claims = await asyncio.to_thread(
+                google_id_token.verify_firebase_token,
+                token,
+                _google_auth_request,
+                audience=_FIREBASE_PROJECT_ID,
+            )
+        except Exception:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        email = (claims.get("email") or "").lower()
+        if email != _OWNER_EMAIL.lower() or not claims.get("email_verified"):
+            # Server-side-only "waitlist" signal — never surfaced to the caller
+            # (the frontend already shows a friendly waitlist screen without
+            # ever reaching the backend for the common case). This catches the
+            # rarer path of someone hitting the API directly. Every account
+            # creation itself (the more complete signal — this print only fires
+            # if they also try an API call) is already visible with zero extra
+            # code in the Firebase Console's Authentication -> Users tab.
+            print(f"[auth_gate] non-owner rejected: {email or '(no email)'}")
+            return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    return await call_next(request)
+
 
 # The browser talks to this API cross-origin for the SSE chat stream — in dev to
 # bypass Next's buffering proxy, and in production because the deployed frontend

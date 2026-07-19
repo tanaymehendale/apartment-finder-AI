@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
 import L from "leaflet";
 import type { Apartment, LandmarkInfo } from "@/lib/types";
+import { authHeaders } from "@/lib/api";
 
 // Fix default icon paths broken by webpack
 delete (L.Icon.Default.prototype as { _getIconUrl?: () => void })._getIconUrl;
@@ -95,7 +96,8 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
     setRoute({ aptId: apt.id, points: [], loading: true });
     try {
       const res = await fetch(
-        `/api/directions?origin=${apt.latitude},${apt.longitude}&destination=${landmark.lat},${landmark.lng}`
+        `/api/directions?origin=${apt.latitude},${apt.longitude}&destination=${landmark.lat},${landmark.lng}`,
+        { headers: await authHeaders() },
       );
       if (!res.ok) throw new Error("Route fetch failed");
       const data: { points: [number, number][] } = await res.json();

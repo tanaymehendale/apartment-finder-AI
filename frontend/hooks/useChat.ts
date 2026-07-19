@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useRef, useEffect } from "react";
-import { createSession, chatStream, isSessionAlive, type RequirementsPayload } from "@/lib/api";
+import { createSession, chatStream, isSessionAlive, cancelSession, type RequirementsPayload } from "@/lib/api";
 import { parseAnalystDossier, mergeSafetyReport, parseRanking, applyRanking, stripRankingMarker } from "@/lib/parseApartments";
 import type { ChatMessage, AgentStatusEvent, AgentName, Apartment, LandmarkInfo, SSEEvent } from "@/lib/types";
 
@@ -15,7 +15,14 @@ const INTERMEDIATE_AGENTS = new Set(["analyst", "reviewer", "ResearchTeam", "Res
 // detected from an HTTP status — it has to be matched on the message.
 const SESSION_LOST_RE = /session not found/i;
 
-type TurnOutcome = "ok" | "session-lost" | "aborted";
+// The auth gate's 401/403 messages (lib/api.ts's chatStream), also relayed as an
+// SSE error event. Matched explicitly (not just relying on it happening not to
+// match SESSION_LOST_RE) so the session-recovery replay below never fires for an
+// auth failure — replaying with a fresh session wouldn't help; the token itself
+// is bad or the account isn't the owner.
+const UNAUTHORIZED_RE = /^(not authorized|signed in as a different account)/i;
+
+type TurnOutcome = "ok" | "session-lost" | "unauthorized" | "aborted";
 
 const CACHE_PREFIXES = ["apt_messages_", "apt_apartments_", "apt_landmark_", "apt_roommates_"];
 
@@ -128,7 +135,7 @@ export function useChat() {
     setAgentStatus(null);
     if (sessionIdRef.current) {
       try {
-        await fetch(`/api/chat/${sessionIdRef.current}/cancel`, { method: "POST" });
+        await cancelSession(sessionIdRef.current);
       } catch {
         // best-effort
       }
@@ -214,6 +221,7 @@ export function useChat() {
       let safetyReport = "";
       let receivedContent = false;
       let sessionLost = false;
+      let unauthorized = false;
       let currentBubbleId = assistantMsgId;
       let currentBubbleAuthor: string | null = null;
       let currentRaw = ""; // unstripped accumulator for the current bubble (to hide the RANKING marker)
@@ -278,6 +286,9 @@ export function useChat() {
                 sessionLost = true;
                 continue;
               }
+              if (UNAUTHORIZED_RE.test(event.content ?? "")) {
+                unauthorized = true;
+              }
               receivedContent = true;
               setMessages((prev) =>
                 prev.map((m) =>
@@ -337,6 +348,7 @@ export function useChat() {
 
       if (abortController.signal.aborted) return "aborted";
       if (sessionLost) return "session-lost";
+      if (unauthorized) return "unauthorized";
       if (!receivedContent) {
         setMessages((prev) =>
           prev.map((m) =>

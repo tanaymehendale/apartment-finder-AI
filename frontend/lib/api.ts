@@ -1,4 +1,19 @@
+import { auth } from "@/lib/firebase";
+
 const BASE = "/api";
+
+// Single-owner Firebase Auth (replaces Phase 3.9's ACCESS_KEY gate). Every
+// backend URL built here (and the couple built outside this file — MapView's
+// /api/directions) forwards the signed-in user's Firebase ID token as an
+// `Authorization: Bearer` header so the backend's own gate (api/server.py's
+// auth_gate) lets it through. `getIdToken()` auto-refreshes an expired token
+// transparently. Empty object (no header) when signed out or auth is disabled
+// (`auth` is null — matches the backend's no-op-when-OWNER_EMAIL-unset
+// convention for local dev).
+export async function authHeaders(): Promise<Record<string, string>> {
+  const token = await auth?.currentUser?.getIdToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 // SSE streaming bypass. Next.js (both the dev `rewrites()` proxy AND App-Router route
 // handlers) BUFFERS `text/event-stream` responses in dev — so the agent pipeline looks
@@ -18,16 +33,20 @@ const BASE = "/api";
 const STREAM_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
 export async function createSession(): Promise<string> {
-  const res = await fetch(`${BASE}/sessions`, { method: "POST" });
+  const res = await fetch(`${BASE}/sessions`, { method: "POST", headers: await authHeaders() });
   if (!res.ok) throw new Error("Failed to create session");
   const data = await res.json();
   return data.session_id as string;
 }
 
 export async function fetchSessionState(sessionId: string): Promise<Record<string, string>> {
-  const res = await fetch(`${BASE}/sessions/${sessionId}/state`);
+  const res = await fetch(`${BASE}/sessions/${sessionId}/state`, { headers: await authHeaders() });
   if (!res.ok) return {};
   return res.json();
+}
+
+export async function cancelSession(sessionId: string): Promise<void> {
+  await fetch(`${BASE}/chat/${sessionId}/cancel`, { method: "POST", headers: await authHeaders() });
 }
 
 /**
@@ -41,7 +60,7 @@ export async function fetchSessionState(sessionId: string): Promise<Record<strin
  */
 export async function isSessionAlive(sessionId: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BASE}/sessions/${sessionId}/state`);
+    const res = await fetch(`${BASE}/sessions/${sessionId}/state`, { headers: await authHeaders() });
     return res.ok;
   } catch {
     return false; // backend unreachable — treat as dead; a retry will re-probe
@@ -77,22 +96,30 @@ export function chatStream(
       try {
         const res = await fetch(`${STREAM_BASE}${BASE}/chat/${sessionId}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
           body: JSON.stringify(requirements ? { message, requirements } : { message }),
           signal: controller.signal,
         });
 
-        // A non-2xx (e.g. 404 for an expired session, 502 from a cold-starting
-        // backend) has a body too, and piping it through raw would surface as
-        // unparseable garbage — or silently as nothing at all. Convert it into a
-        // well-formed SSE error+done pair so useChat's handler (and its session
-        // recovery) sees a real event instead of a malformed stream.
+        // A non-2xx (e.g. 404 for an expired session, 401/403 from the auth
+        // gate, 502 from a cold-starting backend) has a body too, and piping it
+        // through raw would surface as unparseable garbage — or silently as
+        // nothing at all. Convert it into a well-formed SSE error+done pair so
+        // useChat's handler (and its session recovery) sees a real event
+        // instead of a malformed stream. 401/403 get their own explicit,
+        // clearly-worded messages — distinct from "Session not found." on
+        // purpose, so useChat's session-recovery replay (meant for a dead
+        // in-memory session, not an auth failure) never fires for these.
         if (!res.ok) {
           const detail = await res.text().catch(() => "");
           const content =
             res.status === 404
               ? "Session not found."
-              : `Backend returned ${res.status}. ${detail.slice(0, 200)}`.trim();
+              : res.status === 401
+                ? "Not authorized. Please sign in again."
+                : res.status === 403
+                  ? "Signed in as a different account than this app's owner."
+                  : `Backend returned ${res.status}. ${detail.slice(0, 200)}`.trim();
           const encoder = new TextEncoder();
           streamController.enqueue(
             encoder.encode(`data: ${JSON.stringify({ type: "error", content })}\n\n`),

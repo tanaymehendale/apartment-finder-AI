@@ -31,3 +31,7 @@ openinference-instrumentation-google-adk==0.1.17
 # Durable quota counters when USAGE_STORE=firestore (Cloud Run). Unused with the
 # default USAGE_STORE=file, but cheap to keep installed — imported lazily.
 google-cloud-firestore==2.28.0
+# Transitive via google-cloud-firestore, but pinned explicitly now that
+# api/server.py imports it directly (verify_firebase_token, for the OWNER_EMAIL
+# auth gate) — same "pin what you import" rule as the openai line above.
+google-auth==2.43.0

@@ -4,6 +4,24 @@ _This file is auto-maintained by Claude Code. Each entry represents a batch of c
 
 ---
 
+## [2026-07-17 00:48] — Fixed 3 live post-deploy bugs (FU-7, FU-9, FU-10, FU-11): wasted Places quota, wrong Langfuse session grouping, and a landmark-geocoding bug that corrupted every commute distance
+
+### Changes
+
+| File | What Changed | Why (Plain English) |
+|------|-------------|---------------------|
+| `apartment_finder/tools.py` | **(FU-7)** `find_nearby_amenities` now takes a `tool_context` and refuses to spend a Places API call whenever `user_requirements.proximity` is empty in session state — no matter what the Analyst LLM decides to do. **(FU-9 support)** no change here; see `session_manager.py`. **(FU-10 support)** `check_commutes` now echoes the `origins` list it was called with back into its own JSON response. **(FU-11)** `check_commutes` also takes `tool_context` and, when a `landmark_lat`/`landmark_lng` were already resolved earlier in the search, uses that coordinate as the destination instead of a free-text landmark string. | A live search burned 10 real Places API calls (5% of the monthly cap) on a query that never mentioned amenities — the prompt told the Analyst not to call the tool, and it did anyway. Rather than keep patching the prompt, the check now happens in code, where it can't be ignored. Separately, a user reported their own apartment (which they live in, ~47m from the search landmark) showing an 11-minute, 6km commute. Investigation traced it to Google's Distance Matrix API doing its own weak geocoding of the landmark text and silently resolving "HCLTech office" to a different, unrelated business address — corrupting the commute number for every listing in that search, not just one. |
+| `api/session_manager.py` | **(FU-9)** `create_session()` now passes the bridge's own session id into `create_session(session_id=...)` instead of letting ADK generate a second, separate internal id. | Langfuse traces were showing the wrong session id for a conversation — traceable to two different UUIDs existing for the same chat under the hood, and the tracing library picking the "wrong" one. Using a single id everywhere removes the mismatch instead of trying to reconcile two ids after the fact. |
+| `frontend/lib/parseApartments.ts` | **(FU-10)** Commute and "nearby amenity" data are now matched to listings by GPS coordinate instead of by their position in a list. | A listing that's genuinely a 1-minute walk from the landmark was showing an 11-minute drive, while a genuinely far listing showed the 1-minute number — the two got swapped. The underlying cause: the AI writes out the listing details and the commute times as two separate blocks of text in its reply, and nothing guaranteed those two blocks stayed in the same order. Matching by coordinate instead of list position makes that guarantee unnecessary. |
+| `test_tools.py` | Added 3 new offline tests: `test_find_nearby_amenities_gated_on_empty_proximity`, `test_check_commutes_prefers_resolved_landmark_coord` (plus its earlier commit-mate). | Locks in the two code-level fixes above so a future change can't silently regress them without a real API call. |
+
+### Decisions & Assumptions
+- FU-10 (coordinate-based matching) was a real, worthwhile fix on its own, but turned out not to be the primary cause of the reported commute-mismatch bug — it just made the output consistent enough to reveal that the underlying number was wrong (FU-11). Both fixes were kept; FU-10 guards against a real (if secondary) class of mismatch.
+- A third reported issue (the Manager asking an unprompted "how many people are splitting rent?" question once) was investigated but deliberately left unfixed — not reproduced a second time, and treated as likely one-off LLM sampling noise rather than a real defect worth a prompt change.
+- FU-11 was confirmed by directly querying the real Google Distance Matrix API rather than guessing from symptoms alone — it returned a real but wrong business address ("Office, 15325 Redmond Wy") for the ambiguous query "HCLTech office, Redmond, WA," which is what proved the root cause before writing any fix.
+
+---
+
 ## [2026-07-14 00:45] — Phase 3 action buttons; deterministic status-routing + per-person-rent fixes (FU-3..FU-6)
 
 ### Changes

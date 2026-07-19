@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { auth, firebaseEnabled } from "@/lib/firebase";
 import type { ConversationSession } from "@/lib/types";
 
 interface Props {
@@ -20,6 +22,12 @@ export function ConversationSidebar({
   currentSessionId,
 }: Props) {
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!firebaseEnabled || !auth) return;
+    return onAuthStateChanged(auth, (u) => setUserEmail(u?.email ?? null));
+  }, []);
 
   const loadSessions = useCallback(() => {
     try {
@@ -176,6 +184,22 @@ export function ConversationSidebar({
                 className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-500 hover:text-red-400 hover:bg-white/5 rounded-lg transition-colors"
               >
                 Clear all history
+              </button>
+            </div>
+          )}
+
+          {/* Account — only rendered once Firebase Auth is actually configured
+              (see lib/firebase.ts's no-op-when-unset convention) */}
+          {firebaseEnabled && userEmail && (
+            <div className="px-3 py-3 border-t border-white/10 flex-shrink-0 flex items-center justify-between gap-2">
+              <span className="text-[11px] text-gray-500 truncate" title={userEmail}>
+                {userEmail}
+              </span>
+              <button
+                onClick={() => auth && signOut(auth)}
+                className="flex-shrink-0 text-xs text-gray-400 hover:text-white transition-colors"
+              >
+                Sign out
               </button>
             </div>
           )}
