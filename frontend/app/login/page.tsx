@@ -24,6 +24,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   "auth/too-many-requests": "Too many attempts. Try again in a bit.",
   "auth/email-already-in-use": "An account with that email already exists — try signing in instead.",
   "auth/weak-password": "Password should be at least 6 characters.",
+  "auth/unauthorized-domain": "This domain isn't authorized in Firebase yet — add it under Authentication -> Settings -> Authorized domains.",
+  "auth/popup-blocked": "Your browser blocked the sign-in popup. Allow popups for this site and try again.",
 };
 
 function messageFor(err: unknown): string {

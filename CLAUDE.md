@@ -68,7 +68,12 @@ python test_mcp.py             # Validates Google Maps MCP connectivity (legacy;
   as safe to ship client-side, since the real access boundary is the backend's token verification,
   not hiding this config). `NEXT_PUBLIC_OWNER_EMAIL` — same value as the backend's `OWNER_EMAIL`,
   used only for a fast client-side "wrong account" message in `AuthGate`; the backend check is
-  always authoritative.
+  always authoritative. `NEXT_PUBLIC_MAPBOX_TOKEN` (Phase 4, P4-1) — a Mapbox public token (from
+  mapbox.com → account → Tokens; the default public token needs no extra scopes) used only by
+  `frontend/components/map/MapView.tsx` to render the map (`react-map-gl` + `mapbox-gl`). Google
+  Maps stays the data brain — geocoding, Distance Matrix, and `/api/directions` are unchanged;
+  Mapbox is render-only. Unset → `MapView` shows an inline "set the token" message instead of the
+  map, same no-crash-on-missing-config convention as the other `NEXT_PUBLIC_*` vars.
   - `frontend/lib/firebase.ts` initializes the Firebase app/`auth` singleton (or leaves both `null`
     when `NEXT_PUBLIC_FIREBASE_API_KEY` is unset — local dev needs zero Firebase setup).
   - `frontend/components/AuthGate.tsx` wraps the whole app (`app/layout.tsx`) and redirects a

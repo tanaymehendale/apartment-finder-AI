@@ -1,17 +1,12 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
-import L from "leaflet";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Map, { Marker, Popup, Source, Layer, type MapRef } from "react-map-gl/mapbox";
+import "mapbox-gl/dist/mapbox-gl.css";
 import type { Apartment, LandmarkInfo } from "@/lib/types";
 import { authHeaders } from "@/lib/api";
 
-// Fix default icon paths broken by webpack
-delete (L.Icon.Default.prototype as { _getIconUrl?: () => void })._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-});
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
+const MAP_STYLE = "mapbox://styles/mapbox/satellite-streets-v12";
 
 const RANK_LABELS = ["Best Pick", "Runner-up", "3rd Choice", "4th Choice", "5th Choice"];
 const RANK_COLORS = ["#1A56DB", "#374151", "#0EA5E9", "#6B7280", "#9CA3AF"];
@@ -33,51 +28,9 @@ function listingButtonLabel(source?: string): string {
   return source === "zillow" ? "View on Zillow" : "Search listings";
 }
 
-function makeAptIcon(index: number, highlighted: boolean) {
-  const color = highlighted ? RANK_BG[index] ?? "#1A56DB" : "#6B7280";
-  const size = highlighted ? 30 : 24;
-  return L.divIcon({
-    className: "",
-    html: `<div style="
-      width:${size}px;height:${size}px;background:${color};border:2.5px solid white;
-      border-radius:50% 50% 50% 0;transform:rotate(-45deg);
-      box-shadow:0 2px 8px rgba(0,0,0,0.25);
-      transition:all 0.15s ease;
-    "></div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size],
-    popupAnchor: [0, -size],
-  });
-}
-
-const landmarkIcon = L.divIcon({
-  className: "",
-  html: `<div style="
-    width:34px;height:34px;background:#F59E0B;border:3px solid white;
-    border-radius:50%;display:flex;align-items:center;justify-content:center;
-    box-shadow:0 3px 10px rgba(245,158,11,0.5);
-    font-size:16px;line-height:1;
-  ">⭐</div>`,
-  iconSize: [34, 34],
-  iconAnchor: [17, 17],
-  popupAnchor: [0, -20],
-});
-
-function FitBounds({ apartments, landmark }: { apartments: Apartment[]; landmark?: LandmarkInfo | null }) {
-  const map = useMap();
-  useEffect(() => {
-    const points: L.LatLngTuple[] = apartments.map((a) => [a.latitude, a.longitude]);
-    if (landmark) points.push([landmark.lat, landmark.lng]);
-    if (points.length === 0) return;
-    const bounds = L.latLngBounds(points);
-    map.fitBounds(bounds, { padding: [48, 48], maxZoom: 14 });
-  }, [apartments, landmark, map]);
-  return null;
-}
-
 interface RouteState {
   aptId: string;
-  points: [number, number][];
+  points: [number, number][]; // [lat, lng] pairs, as returned by /api/directions
   loading: boolean;
 }
 
@@ -89,6 +42,9 @@ interface Props {
 }
 
 export function MapView({ apartments, highlightedId, onHighlight, landmark }: Props) {
+  const mapRef = useRef<MapRef | null>(null);
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [route, setRoute] = useState<RouteState | null>(null);
 
   const fetchRoute = useCallback(async (apt: Apartment) => {
@@ -112,6 +68,49 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
     }
   }, [landmark]);
 
+  const selectApartment = useCallback((apt: Apartment, opts?: { flyTo?: boolean }) => {
+    setSelectedId(apt.id);
+    fetchRoute(apt);
+    if (opts?.flyTo) {
+      mapRef.current?.flyTo({ center: [apt.longitude, apt.latitude], zoom: 15, duration: 900 });
+    }
+  }, [fetchRoute]);
+
+  // P4-2: as soon as results arrive, auto-select the top pick so its route +
+  // commute are visible immediately — no click required.
+  useEffect(() => {
+    if (apartments.length === 0) {
+      setSelectedId(null);
+      setRoute(null);
+      return;
+    }
+    selectApartment(apartments[0]);
+    // Only re-run when a NEW result set arrives, not on every re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apartments]);
+
+  // Fit the whole result set (+ landmark) in view whenever it changes.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded) return;
+    const points: [number, number][] = apartments.map((a) => [a.longitude, a.latitude]);
+    if (landmark) points.push([landmark.lng, landmark.lat]);
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      map.flyTo({ center: points[0], zoom: 13, duration: 0 });
+      return;
+    }
+    const lngs = points.map((p) => p[0]);
+    const lats = points.map((p) => p[1]);
+    map.fitBounds(
+      [
+        [Math.min(...lngs), Math.min(...lats)],
+        [Math.max(...lngs), Math.max(...lats)],
+      ],
+      { padding: 48, maxZoom: 14, duration: 0 },
+    );
+  }, [apartments, landmark, mapLoaded]);
+
   if (apartments.length === 0) {
     return (
       <div className="flex items-center justify-center h-full bg-gray-50 rounded-2xl border border-gray-100">
@@ -120,65 +119,131 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
     );
   }
 
-  const center: [number, number] = [apartments[0].latitude, apartments[0].longitude];
+  if (!MAPBOX_TOKEN) {
+    return (
+      <div className="flex items-center justify-center h-full bg-gray-50 rounded-2xl border border-gray-100 p-6 text-center">
+        <p className="text-sm text-muted">
+          Map unavailable — set <code className="px-1 py-0.5 bg-gray-100 rounded">NEXT_PUBLIC_MAPBOX_TOKEN</code> in
+          <code className="px-1 py-0.5 bg-gray-100 rounded ml-1">frontend/.env.local</code>.
+        </p>
+      </div>
+    );
+  }
+
+  const initialCenter: [number, number] = [apartments[0].longitude, apartments[0].latitude];
+  const routeGeoJson = route && route.points.length >= 2
+    ? {
+        type: "Feature" as const,
+        properties: {},
+        geometry: {
+          type: "LineString" as const,
+          coordinates: route.points.map(([lat, lng]) => [lng, lat]),
+        },
+      }
+    : null;
 
   return (
-    <MapContainer
-      center={center}
-      zoom={12}
-      scrollWheelZoom
-      style={{ height: "100%", width: "100%" }}
+    <Map
+      ref={mapRef}
+      mapboxAccessToken={MAPBOX_TOKEN}
+      mapStyle={MAP_STYLE}
+      initialViewState={{ longitude: initialCenter[0], latitude: initialCenter[1], zoom: 12 }}
+      style={{ height: "100%", width: "100%", borderRadius: 12 }}
+      onLoad={() => setMapLoaded(true)}
+      reuseMaps
     >
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
-      <FitBounds apartments={apartments} landmark={landmark} />
-
-      {/* Landmark pin */}
-      {landmark && (
-        <Marker position={[landmark.lat, landmark.lng]} icon={landmarkIcon}>
-          <Popup>
-            <div className="text-xs font-semibold text-amber-600">{landmark.name || "Destination"}</div>
-          </Popup>
-        </Marker>
+      {/* Route polyline */}
+      {routeGeoJson && (
+        <Source id="route" type="geojson" data={routeGeoJson}>
+          <Layer
+            id="route-line"
+            type="line"
+            layout={{ "line-cap": "round", "line-join": "round" }}
+            paint={{
+              "line-color": "#1A56DB",
+              "line-width": 4,
+              "line-opacity": 0.75,
+              "line-dasharray": route?.loading ? [2, 2] : [1, 0],
+            }}
+          />
+        </Source>
       )}
 
-      {/* Route polyline */}
-      {route && route.points.length >= 2 && (
-        <Polyline
-          positions={route.points}
-          pathOptions={{
-            color: "#1A56DB",
-            weight: 4,
-            opacity: 0.75,
-            dashArray: route.loading ? "8 8" : undefined,
-          }}
-        />
+      {/* Landmark pin — permanent name label under the pin (no click needed) */}
+      {landmark && (
+        <Marker longitude={landmark.lng} latitude={landmark.lat} anchor="bottom">
+          <div style={{ position: "relative", width: 34, height: 34 }}>
+            <div
+              style={{
+                width: 34, height: 34, background: "#F59E0B", border: "3px solid white",
+                borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                boxShadow: "0 3px 10px rgba(245,158,11,0.5)", fontSize: 16, lineHeight: 1,
+              }}
+            >
+              ⭐
+            </div>
+            <div
+              style={{
+                position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)",
+                marginTop: 4, whiteSpace: "nowrap", background: "white", color: "#92400E",
+                fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
+                boxShadow: "0 2px 6px rgba(0,0,0,0.15)", border: "1px solid #FDE68A",
+              }}
+            >
+              {landmark.name || "Destination"}
+            </div>
+          </div>
+        </Marker>
       )}
 
       {/* Apartment pins */}
-      {apartments.map((apt, index) => (
-        <Marker
-          key={apt.id}
-          position={[apt.latitude, apt.longitude]}
-          icon={makeAptIcon(index, highlightedId === apt.id)}
-          eventHandlers={{
-            mouseover: () => onHighlight(apt.id),
-            mouseout: () => onHighlight(null),
-            popupopen: () => fetchRoute(apt),
-            popupclose: () => {
-              setRoute(null);
-              onHighlight(null);
-            },
-          }}
-        >
-          <Popup minWidth={200} maxWidth={260}>
+      {apartments.map((apt, index) => {
+        const active = highlightedId === apt.id || selectedId === apt.id;
+        const color = active ? RANK_BG[index] ?? "#1A56DB" : "#6B7280";
+        const size = active ? 30 : 24;
+        return (
+          <Marker
+            key={apt.id}
+            longitude={apt.longitude}
+            latitude={apt.latitude}
+            anchor="bottom"
+            onClick={(e) => {
+              e.originalEvent?.stopPropagation();
+              selectApartment(apt, { flyTo: true });
+            }}
+          >
+            <div
+              onMouseEnter={() => onHighlight(apt.id)}
+              onMouseLeave={() => onHighlight(null)}
+              style={{
+                width: size, height: size, background: color, border: "2.5px solid white",
+                borderRadius: "50% 50% 50% 0", transform: "rotate(-45deg)",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.25)", transition: "all 0.15s ease", cursor: "pointer",
+              }}
+            />
+          </Marker>
+        );
+      })}
+
+      {/* Detail popup for the selected/best-pick apartment */}
+      {selectedId && (() => {
+        const index = apartments.findIndex((a) => a.id === selectedId);
+        const apt = apartments[index];
+        if (!apt) return null;
+        return (
+          <Popup
+            longitude={apt.longitude}
+            latitude={apt.latitude}
+            anchor="bottom"
+            offset={36}
+            maxWidth="260px"
+            onClose={() => { setSelectedId(null); setRoute(null); }}
+          >
             <AptPopup apt={apt} index={index} landmark={landmark} />
           </Popup>
-        </Marker>
-      ))}
-    </MapContainer>
+        );
+      })()}
+    </Map>
   );
 }
 
@@ -187,10 +252,10 @@ function AptPopup({ apt, index, landmark }: { apt: Apartment; index: number; lan
   const rankColor = RANK_COLORS[index] ?? "#6B7280";
 
   return (
-    <div className="text-xs" style={{ fontFamily: "inherit" }}>
+    <div className="text-xs" style={{ fontFamily: "inherit", padding: "10px 12px 12px" }}>
       {/* Photo */}
       {apt.photos && apt.photos.length > 0 && (
-        <div style={{ margin: "-8px -12px 8px", overflow: "hidden", borderRadius: "6px 6px 0 0" }}>
+        <div style={{ margin: "-10px -12px 8px", overflow: "hidden", borderRadius: "12px 12px 0 0" }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={apt.photos[0]}
