@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { AgentStatusEvent } from "@/lib/types";
+import { SpinnerIcon, CheckCircleIcon } from "@/lib/icons";
 
 const PIPELINE = ["Manager", "Analyst", "Reviewer", "Summarizer"] as const;
 
@@ -51,8 +52,6 @@ const PHRASES: Record<string, string[]> = {
   ],
 };
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
 function getActiveIndex(agent: string): number {
   if (agent === "Research Team") return 1; // maps to Analyst
   const idx = PIPELINE.indexOf(agent as typeof PIPELINE[number]);
@@ -65,7 +64,6 @@ interface Props {
 }
 
 export function AgentStatus({ status, isStreaming }: Props) {
-  const [spinnerIdx, setSpinnerIdx] = useState(0);
   const [phraseIdx, setPhraseIdx] = useState(0);
   const [visible, setVisible] = useState(true);
 
@@ -80,16 +78,6 @@ export function AgentStatus({ status, isStreaming }: Props) {
     setPhraseIdx(0);
     setVisible(true);
   }, [agent, isWaiting]);
-
-  // Spinner — 80 ms per frame
-  useEffect(() => {
-    if (!isStreaming) return;
-    const id = setInterval(
-      () => setSpinnerIdx((i) => (i + 1) % SPINNER_FRAMES.length),
-      80,
-    );
-    return () => clearInterval(id);
-  }, [isStreaming]);
 
   // Phrase cycling with fade-out → swap → fade-in
   useEffect(() => {
@@ -107,7 +95,12 @@ export function AgentStatus({ status, isStreaming }: Props) {
   if (!isStreaming && !status) return null;
 
   return (
-    <div className="mx-4 mb-3 px-1 space-y-1.5 select-none">
+    <div
+      className="mx-4 mb-3 px-1 space-y-2 select-none"
+      role="status"
+      aria-live="polite"
+      aria-label={`${agent}: ${phrases[phraseIdx]}`}
+    >
       {PIPELINE.map((name, i) => {
         // Only render completed and active stages — hide upcoming ones
         if (i > activeIdx) return null;
@@ -118,19 +111,16 @@ export function AgentStatus({ status, isStreaming }: Props) {
         return (
           <div key={name}>
             <div className="flex items-center gap-2">
-              <span
-                className={`w-4 font-mono text-xs leading-none ${
-                  isDone ? "text-green-500" : "text-primary"
-                }`}
-                aria-hidden
-              >
-                {isDone ? "✓" : SPINNER_FRAMES[spinnerIdx]}
-              </span>
+              {isDone ? (
+                <CheckCircleIcon className="w-4 h-4 text-success-600 flex-shrink-0" aria-hidden />
+              ) : (
+                <SpinnerIcon className="w-3.5 h-3.5 text-primary-600 animate-spin-slow flex-shrink-0" aria-hidden />
+              )}
               <span
                 className={`text-xs ${
                   isDone
-                    ? "text-gray-400"
-                    : "text-gray-700 font-medium"
+                    ? "text-neutral-400"
+                    : "text-neutral-700 font-medium"
                 }`}
               >
                 {name}
@@ -138,9 +128,9 @@ export function AgentStatus({ status, isStreaming }: Props) {
             </div>
 
             {isActive && (
-              <div className="ml-6 mt-0.5">
+              <div className="ml-[22px] mt-0.5">
                 <span
-                  className="text-xs text-muted transition-opacity duration-[250ms]"
+                  className="text-xs text-neutral-500 transition-opacity duration-[250ms]"
                   style={{ opacity: visible ? 1 : 0 }}
                 >
                   {phrases[phraseIdx]}

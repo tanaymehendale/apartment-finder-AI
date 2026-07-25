@@ -4,13 +4,30 @@ import Map, { Marker, Popup, Source, Layer, type MapRef } from "react-map-gl/map
 import "mapbox-gl/dist/mapbox-gl.css";
 import type { Apartment, LandmarkInfo } from "@/lib/types";
 import { authHeaders } from "@/lib/api";
+import { PinIcon, ClockIcon, ExternalLinkIcon, RouteIcon } from "@/lib/icons";
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
 const MAP_STYLE = "mapbox://styles/mapbox/satellite-streets-v12";
 
+// Same palette as tailwind.config.ts (primary-600 / neutral-700 / accent-600
+// / neutral-500 / neutral-400) — duplicated as plain CSS color strings since
+// these markers render as inline-styled divs, not Tailwind-classed elements.
 const RANK_LABELS = ["Best Pick", "Runner-up", "3rd Choice", "4th Choice", "5th Choice"];
-const RANK_COLORS = ["#1A56DB", "#374151", "#0EA5E9", "#6B7280", "#9CA3AF"];
-const RANK_BG = ["#1A56DB", "#374151", "#0EA5E9", "#6B7280", "#9CA3AF"];
+const RANK_HEX = [
+  "oklch(50% 0.165 32)",
+  "oklch(38% 0.013 35)",
+  "oklch(52% 0.08 165)",
+  "oklch(55% 0.014 35)",
+  "oklch(70% 0.012 35)",
+];
+const PRIMARY = "oklch(50% 0.165 32)";
+// Mapbox GL's own style engine (paint/layout props on Source/Layer) parses
+// colors with its bundled csscolorparser, which does NOT understand OKLCH —
+// unlike the marker/popup divs below, which are plain DOM elements where the
+// browser's native CSS engine handles oklch() fine. Hex equivalent, computed
+// from the same oklch(50% 0.165 32), used only for the route line's paint prop.
+const PRIMARY_HEX = "#ad301c";
+const LANDMARK_COLOR = "oklch(56% 0.14 60)";
 
 // P3-2: pure client-side Google Maps directions link, no backend call.
 function directionsUrl(apt: Apartment, landmark: LandmarkInfo): string {
@@ -113,18 +130,18 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
 
   if (apartments.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full bg-gray-50 rounded-2xl border border-gray-100">
-        <p className="text-sm text-muted">No apartments to display</p>
+      <div className="flex items-center justify-center h-full bg-neutral-50 rounded-2xl border border-neutral-100">
+        <p className="text-sm text-neutral-500">No apartments to display</p>
       </div>
     );
   }
 
   if (!MAPBOX_TOKEN) {
     return (
-      <div className="flex items-center justify-center h-full bg-gray-50 rounded-2xl border border-gray-100 p-6 text-center">
-        <p className="text-sm text-muted">
-          Map unavailable — set <code className="px-1 py-0.5 bg-gray-100 rounded">NEXT_PUBLIC_MAPBOX_TOKEN</code> in
-          <code className="px-1 py-0.5 bg-gray-100 rounded ml-1">frontend/.env.local</code>.
+      <div className="flex items-center justify-center h-full bg-neutral-50 rounded-2xl border border-neutral-100 p-6 text-center">
+        <p className="text-sm text-neutral-500">
+          Map unavailable — set <code className="px-1 py-0.5 bg-neutral-100 rounded">NEXT_PUBLIC_MAPBOX_TOKEN</code> in
+          <code className="px-1 py-0.5 bg-neutral-100 rounded ml-1">frontend/.env.local</code>.
         </p>
       </div>
     );
@@ -148,7 +165,7 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
       mapboxAccessToken={MAPBOX_TOKEN}
       mapStyle={MAP_STYLE}
       initialViewState={{ longitude: initialCenter[0], latitude: initialCenter[1], zoom: 12 }}
-      style={{ height: "100%", width: "100%", borderRadius: 12 }}
+      style={{ height: "100%", width: "100%", borderRadius: 18 }}
       onLoad={() => setMapLoaded(true)}
       reuseMaps
     >
@@ -160,9 +177,9 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
             type="line"
             layout={{ "line-cap": "round", "line-join": "round" }}
             paint={{
-              "line-color": "#1A56DB",
+              "line-color": PRIMARY_HEX,
               "line-width": 4,
-              "line-opacity": 0.75,
+              "line-opacity": 0.8,
               "line-dasharray": route?.loading ? [2, 2] : [1, 0],
             }}
           />
@@ -172,22 +189,23 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
       {/* Landmark pin — permanent name label under the pin (no click needed) */}
       {landmark && (
         <Marker longitude={landmark.lng} latitude={landmark.lat} anchor="bottom">
-          <div style={{ position: "relative", width: 34, height: 34 }}>
+          <div style={{ position: "relative", width: 34, height: 34 }} role="img" aria-label={`Destination: ${landmark.name || "your landmark"}`}>
             <div
               style={{
-                width: 34, height: 34, background: "#F59E0B", border: "3px solid white",
+                width: 34, height: 34, background: LANDMARK_COLOR, border: "3px solid white",
                 borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: "0 3px 10px rgba(245,158,11,0.5)", fontSize: 16, lineHeight: 1,
+                boxShadow: `0 3px 10px ${LANDMARK_COLOR.replace(")", " / 0.45)")}`,
               }}
             >
-              ⭐
+              <PinIcon style={{ width: 16, height: 16, color: "white" }} />
             </div>
             <div
               style={{
                 position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)",
-                marginTop: 4, whiteSpace: "nowrap", background: "white", color: "#92400E",
+                marginTop: 4, whiteSpace: "nowrap", background: "white", color: "oklch(38% 0.1 60)",
                 fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
-                boxShadow: "0 2px 6px rgba(0,0,0,0.15)", border: "1px solid #FDE68A",
+                boxShadow: "0 2px 6px oklch(25% 0.02 35 / 0.15)", border: `1px solid oklch(90% 0.06 60)`,
+                fontFamily: "var(--font-body), sans-serif",
               }}
             >
               {landmark.name || "Destination"}
@@ -199,7 +217,7 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
       {/* Apartment pins */}
       {apartments.map((apt, index) => {
         const active = highlightedId === apt.id || selectedId === apt.id;
-        const color = active ? RANK_BG[index] ?? "#1A56DB" : "#6B7280";
+        const color = active ? RANK_HEX[index] ?? PRIMARY : "oklch(46% 0.014 35)";
         const size = active ? 30 : 24;
         return (
           <Marker
@@ -215,10 +233,19 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
             <div
               onMouseEnter={() => onHighlight(apt.id)}
               onMouseLeave={() => onHighlight(null)}
+              role="button"
+              aria-label={`${RANK_LABELS[index] ?? `Option ${index + 1}`}: ${apt.address}`}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  selectApartment(apt, { flyTo: true });
+                }
+              }}
               style={{
                 width: size, height: size, background: color, border: "2.5px solid white",
                 borderRadius: "50% 50% 50% 0", transform: "rotate(-45deg)",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.25)", transition: "all 0.15s ease", cursor: "pointer",
+                boxShadow: "0 2px 8px oklch(25% 0.02 35 / 0.25)", transition: "all 0.15s ease", cursor: "pointer",
               }}
             />
           </Marker>
@@ -249,13 +276,13 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
 
 function AptPopup({ apt, index, landmark }: { apt: Apartment; index: number; landmark?: LandmarkInfo | null }) {
   const rankLabel = RANK_LABELS[index] ?? `#${index + 1}`;
-  const rankColor = RANK_COLORS[index] ?? "#6B7280";
+  const rankColor = RANK_HEX[index] ?? "oklch(46% 0.014 35)";
 
   return (
-    <div className="text-xs" style={{ fontFamily: "inherit", padding: "10px 12px 12px" }}>
+    <div className="text-xs" style={{ fontFamily: "var(--font-body), sans-serif", padding: "10px 12px 12px" }}>
       {/* Photo */}
       {apt.photos && apt.photos.length > 0 && (
-        <div style={{ margin: "-10px -12px 8px", overflow: "hidden", borderRadius: "12px 12px 0 0" }}>
+        <div style={{ margin: "-10px -12px 8px", overflow: "hidden", borderRadius: "18px 18px 0 0" }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={apt.photos[0]}
@@ -282,24 +309,25 @@ function AptPopup({ apt, index, landmark }: { apt: Apartment; index: number; lan
       </div>
 
       {/* Name / description */}
-      <p style={{ fontWeight: 600, color: "#111827", marginBottom: "2px", lineHeight: "1.3" }}>
+      <p style={{ fontFamily: "var(--font-display), sans-serif", fontWeight: 700, color: "oklch(18% 0.01 35)", marginBottom: "2px", lineHeight: "1.3" }}>
         {apt.agent_description}
       </p>
 
       {/* Address */}
-      <p style={{ color: "#6B7280", marginBottom: "4px", lineHeight: "1.3" }}>
+      <p style={{ color: "oklch(46% 0.014 35)", marginBottom: "4px", lineHeight: "1.3" }}>
         {apt.address}
       </p>
 
       {/* Price */}
-      <p style={{ fontWeight: 700, color: "#1A56DB", fontSize: "13px", marginBottom: "4px" }}>
+      <p style={{ fontFamily: "var(--font-display), sans-serif", fontWeight: 700, color: "oklch(50% 0.165 32)", fontSize: "13px", marginBottom: "4px" }}>
         ${apt.monthly_price.toLocaleString()}/mo
       </p>
 
       {/* Commute */}
       {apt.commute && (
-        <p style={{ color: "#6B7280", marginBottom: "6px" }}>
-          🚗 {apt.commute.duration_text} · {apt.commute.distance_text}
+        <p style={{ color: "oklch(46% 0.014 35)", marginBottom: "6px", display: "flex", alignItems: "center", gap: "4px" }}>
+          <ClockIcon style={{ width: 12, height: 12, flexShrink: 0 }} />
+          {apt.commute.duration_text} · {apt.commute.distance_text}
         </p>
       )}
 
@@ -311,11 +339,13 @@ function AptPopup({ apt, index, landmark }: { apt: Apartment; index: number; lan
             target="_blank"
             rel="noopener noreferrer"
             style={{
-              flex: 1, textAlign: "center", fontSize: "10.5px", fontWeight: 600,
-              padding: "5px 6px", borderRadius: "8px", background: "#F3F4F6",
-              color: "#374151", textDecoration: "none",
+              flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "4px",
+              textAlign: "center", fontSize: "10.5px", fontWeight: 600,
+              padding: "5px 6px", borderRadius: "10px", background: "oklch(95.5% 0.008 35)",
+              color: "oklch(38% 0.013 35)", textDecoration: "none",
             }}
           >
+            <ExternalLinkIcon style={{ width: 11, height: 11, flexShrink: 0 }} />
             {listingButtonLabel(apt.listing_source)}
           </a>
         )}
@@ -325,11 +355,13 @@ function AptPopup({ apt, index, landmark }: { apt: Apartment; index: number; lan
             target="_blank"
             rel="noopener noreferrer"
             style={{
-              flex: 1, textAlign: "center", fontSize: "10.5px", fontWeight: 600,
-              padding: "5px 6px", borderRadius: "8px", background: "#DBEAFE",
-              color: "#1A56DB", textDecoration: "none",
+              flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "4px",
+              textAlign: "center", fontSize: "10.5px", fontWeight: 600,
+              padding: "5px 6px", borderRadius: "10px", background: "oklch(94% 0.035 32)",
+              color: "oklch(42% 0.145 32)", textDecoration: "none",
             }}
           >
+            <RouteIcon style={{ width: 11, height: 11, flexShrink: 0 }} />
             Directions
           </a>
         )}

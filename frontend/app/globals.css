@@ -1,18 +1,12 @@
 @import "mapbox-gl/dist/mapbox-gl.css";
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #F8FAFC;
-  --surface: #FFFFFF;
-  --primary: #1A56DB;
-  --accent: #0EA5E9;
-  --text: #111827;
-  --muted: #6B7280;
-}
+/* Fonts are loaded via next/font/google in app/layout.tsx (self-hosted, no
+   render-blocking CDN request, font-display: swap) — see --font-display /
+   --font-body custom properties it registers on <html>. */
 
 * {
   box-sizing: border-box;
@@ -23,10 +17,33 @@ body {
   height: 100%;
   margin: 0;
   padding: 0;
-  font-family: "Inter", system-ui, sans-serif;
-  background: var(--background);
-  color: var(--text);
+  font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  background: theme("colors.background");
+  color: theme("colors.neutral.900");
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.015em;
+}
+
+/* Visible, on-brand focus ring for every interactive element — replaces the
+   browser default outline rather than suppressing it. */
+:focus-visible {
+  outline: 2px solid theme("colors.primary.500");
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Scrollbar styling */
@@ -37,23 +54,29 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #D1D5DB;
+  background: theme("colors.neutral.300");
   border-radius: 2px;
 }
 
 /* Mapbox GL container + popup chrome — must be after tailwind reset */
 .mapboxgl-map {
-  border-radius: 12px;
+  border-radius: 18px;
 }
 .mapboxgl-popup-content {
   padding: 0;
-  border-radius: 12px;
+  border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 16px 36px oklch(25% 0.02 35 / 0.18);
+  font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
 }
 .mapboxgl-popup-close-button {
   z-index: 10;
-  font-size: 16px;
-  color: #6b7280;
+  font-size: 18px;
+  color: oklch(55% 0.014 35);
   padding: 4px 8px;
+}
+.mapboxgl-popup-close-button:focus-visible {
+  outline: 2px solid oklch(50% 0.165 32);
+  outline-offset: -2px;
+  border-radius: 4px;
 }

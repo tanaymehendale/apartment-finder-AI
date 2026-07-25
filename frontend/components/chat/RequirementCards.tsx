@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import type { RequirementsPayload } from "@/lib/api";
+import { CheckCircleIcon, PlusIcon } from "@/lib/icons";
 
 type Proximity = { label: string; kind: "named" | "category" | "transit" };
 
@@ -51,10 +52,11 @@ function Chip({
     <button
       type="button"
       onClick={onClick}
-      className={`px-3 py-1.5 text-xs font-medium rounded-xl border transition-all ${
+      aria-pressed={active}
+      className={`px-3 py-1.5 text-sm font-medium rounded-xl border transition-all ${
         active
-          ? "bg-primary text-white border-primary shadow-sm"
-          : "bg-white text-gray-600 border-gray-200 hover:border-primary hover:text-primary"
+          ? "bg-primary-600 text-white border-primary-600 shadow-xs"
+          : "bg-surface text-neutral-600 border-neutral-200 hover:border-primary-300 hover:text-primary-700"
       }`}
     >
       {children}
@@ -63,7 +65,6 @@ function Chip({
 }
 
 export function RequirementCards({ onChange }: Props) {
-  const [open, setOpen] = useState(false);
   const [bedrooms, setBedrooms] = useState(0);
   const [bathrooms, setBathrooms] = useState(0);
   const [roommates, setRoommates] = useState(0);
@@ -106,25 +107,12 @@ export function RequirementCards({ onChange }: Props) {
 
   return (
     <div className="w-full">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-primary transition-colors mx-auto"
-      >
-        <svg
-          className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-90" : ""}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-        Add preferences (optional)
-      </button>
+      <span className="block text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-2">
+        Preferences <span className="normal-case font-normal text-neutral-400">(optional)</span>
+      </span>
 
-      {open && (
-        <div className="mt-3 w-full bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col gap-4 text-left">
-          {/* Bedrooms */}
+      <div className="w-full bg-surface border border-neutral-200 rounded-2xl p-4 shadow-sm flex flex-col gap-4 text-left">
+        {/* Bedrooms */}
           <Section label="Bedrooms">
             {BED_OPTS.map((o) => (
               <Chip key={o.label} active={bedrooms === o.v} onClick={() => setBedrooms(o.v)}>
@@ -164,15 +152,24 @@ export function RequirementCards({ onChange }: Props) {
           <Section label="Also near">
             {QUICK_NEAR.map((p) => (
               <Chip key={p.label} active={isActive(p.label)} onClick={() => toggleNear(p)}>
-                {isActive(p.label) ? "✓ " : "+ "}
-                {p.label}
+                <span className="inline-flex items-center gap-1">
+                  {isActive(p.label) ? (
+                    <CheckCircleIcon className="w-3.5 h-3.5" />
+                  ) : (
+                    <PlusIcon className="w-3 h-3" />
+                  )}
+                  {p.label}
+                </span>
               </Chip>
             ))}
             {proximity
               .filter((p) => !QUICK_NEAR.some((q) => q.label.toLowerCase() === p.label.toLowerCase()))
               .map((p) => (
                 <Chip key={p.label} active onClick={() => toggleNear(p)}>
-                  ✓ {p.label}
+                  <span className="inline-flex items-center gap-1">
+                    <CheckCircleIcon className="w-3.5 h-3.5" />
+                    {p.label}
+                  </span>
                 </Chip>
               ))}
           </Section>
@@ -189,19 +186,19 @@ export function RequirementCards({ onChange }: Props) {
                 }
               }}
               placeholder="Add another, e.g. Indian grocery"
-              className="flex-1 text-xs px-3 py-2 rounded-xl border border-gray-200 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+              aria-label="Add a custom nearby place"
+              className="flex-1 text-sm px-3 py-2 rounded-xl border border-neutral-200 outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100"
             />
             <button
               type="button"
               onClick={addCustom}
               disabled={!custom.trim()}
-              className="px-3 py-2 text-xs font-medium rounded-xl bg-gray-100 text-gray-700 hover:bg-primary hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-2 text-sm font-medium rounded-xl bg-neutral-100 text-neutral-700 hover:bg-primary-600 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               Add
             </button>
           </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -209,7 +206,7 @@ export function RequirementCards({ onChange }: Props) {
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{label}</span>
+      <span className="text-xs font-semibold uppercase tracking-wide text-neutral-400">{label}</span>
       <div className="flex flex-wrap gap-2">{children}</div>
     </div>
   );

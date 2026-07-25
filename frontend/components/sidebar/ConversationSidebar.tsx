@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth, firebaseEnabled } from "@/lib/firebase";
 import type { ConversationSession } from "@/lib/types";
+import { MarkIcon, PlusIcon, XIcon, GridIcon } from "@/lib/icons";
 
 interface Props {
   isOpen: boolean;
@@ -85,7 +86,7 @@ export function ConversationSidebar({
   return (
     <div
       className={[
-        "flex-shrink-0 flex flex-col h-full bg-gray-900 text-white overflow-hidden",
+        "flex-shrink-0 flex flex-col h-full bg-ink-900 text-white overflow-hidden",
         "transition-all duration-300 ease-in-out",
         isOpen ? "w-60" : "w-12",
       ].join(" ")}
@@ -94,15 +95,17 @@ export function ConversationSidebar({
       <div className={["flex items-center h-14 border-b border-white/10 flex-shrink-0", isOpen ? "px-4 gap-3" : "justify-center px-0"].join(" ")}>
         <button
           onClick={onToggle}
+          aria-label={isOpen ? "Collapse sidebar" : "Expand sidebar"}
           className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors flex-shrink-0"
           title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
         >
-          <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
-          </svg>
+          <GridIcon className="w-4 h-4 text-primary-300" />
         </button>
         {isOpen && (
-          <span className="text-sm font-semibold text-white truncate">ApartmentFinder AI</span>
+          <span className="flex items-center gap-1.5 text-sm font-semibold text-white truncate font-display">
+            <MarkIcon className="w-3.5 h-3.5 text-primary-400 flex-shrink-0" />
+            ApartmentFinder AI
+          </span>
         )}
       </div>
 
@@ -112,18 +115,16 @@ export function ConversationSidebar({
           <div className="px-3 py-3 flex-shrink-0">
             <button
               onClick={onNewSearch}
-              className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-white bg-white/10 hover:bg-white/20 rounded-xl transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-500 rounded-xl transition-colors shadow-xs"
             >
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
+              <PlusIcon className="w-4 h-4 flex-shrink-0" />
               New search
             </button>
           </div>
 
           {/* Sessions label */}
           {sessions.length > 0 && (
-            <p className="px-4 pb-1 text-[10px] font-semibold text-gray-500 uppercase tracking-widest flex-shrink-0">
+            <p className="px-4 pb-1 text-[10px] font-semibold text-neutral-500 uppercase tracking-widest flex-shrink-0">
               Recent
             </p>
           )}
@@ -132,7 +133,7 @@ export function ConversationSidebar({
           <div className="flex-1 overflow-y-auto">
             {sessions.length === 0 ? (
               <div className="px-4 py-8 text-center">
-                <p className="text-xs text-gray-500">No past searches yet</p>
+                <p className="text-xs text-neutral-500">No past searches yet</p>
               </div>
             ) : (
               <div className="pb-2">
@@ -143,7 +144,7 @@ export function ConversationSidebar({
                       key={session.id}
                       className={[
                         "group flex items-center px-2 py-0.5 mx-2 rounded-lg transition-colors cursor-pointer",
-                        isActive ? "bg-white/10" : "hover:bg-white/5",
+                        isActive ? "bg-primary-500/20" : "hover:bg-white/5",
                       ].join(" ")}
                     >
                       <button
@@ -152,22 +153,21 @@ export function ConversationSidebar({
                       >
                         <span className={[
                           "text-xs font-medium truncate block leading-tight",
-                          isActive ? "text-white" : "text-gray-300",
+                          isActive ? "text-white" : "text-neutral-300",
                         ].join(" ")}>
                           {session.title}
                         </span>
-                        <span className="text-[10px] text-gray-500 mt-0.5">
+                        <span className="text-[10px] text-neutral-500 mt-0.5">
                           {formatDate(session.createdAt)}
                         </span>
                       </button>
                       <button
                         onClick={(e) => deleteSession(session.id, e)}
                         title="Delete"
-                        className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:text-red-400 text-gray-500 transition-all"
+                        aria-label={`Delete conversation: ${session.title}`}
+                        className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:text-danger-400 text-neutral-500 transition-all"
                       >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
+                        <XIcon className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   );
@@ -181,7 +181,7 @@ export function ConversationSidebar({
             <div className="px-3 py-3 border-t border-white/10 flex-shrink-0">
               <button
                 onClick={clearAll}
-                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-500 hover:text-red-400 hover:bg-white/5 rounded-lg transition-colors"
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-neutral-500 hover:text-danger-400 hover:bg-white/5 rounded-lg transition-colors"
               >
                 Clear all history
               </button>
@@ -192,12 +192,12 @@ export function ConversationSidebar({
               (see lib/firebase.ts's no-op-when-unset convention) */}
           {firebaseEnabled && userEmail && (
             <div className="px-3 py-3 border-t border-white/10 flex-shrink-0 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-gray-500 truncate" title={userEmail}>
+              <span className="text-[11px] text-neutral-500 truncate" title={userEmail}>
                 {userEmail}
               </span>
               <button
                 onClick={() => auth && signOut(auth)}
-                className="flex-shrink-0 text-xs text-gray-400 hover:text-white transition-colors"
+                className="flex-shrink-0 text-xs text-neutral-400 hover:text-white transition-colors"
               >
                 Sign out
               </button>
@@ -211,12 +211,11 @@ export function ConversationSidebar({
         <div className="flex flex-col items-center pt-3 gap-2">
           <button
             onClick={onNewSearch}
-            className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            aria-label="New search"
+            className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-neutral-400 hover:text-white transition-colors"
             title="New search"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
+            <PlusIcon className="w-4 h-4" />
           </button>
         </div>
       )}
