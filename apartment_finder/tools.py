@@ -741,6 +741,22 @@ def _looks_like_erroneous_no_results(safety_report: str) -> bool:
     return (safety_report or "").strip().upper().startswith("STATUS: NO_RESULTS")
 
 
+def _safety_report_unusable(safety_report: str) -> bool:
+    """True for the false-negative NO_RESULTS marker AND for a Reviewer turn
+    that produced no usable text at all. The latter is a real, observed Gemini
+    failure mode distinct from a thrown exception: the model occasionally
+    finishes with `finish_reason: STOP` and zero content parts (no text, no
+    google_search grounding call) — ADK's `output_key` only writes state when
+    there's text to extract, so `safety_report` is silently never set. Without
+    this check, the Summarizer's prompt template (which requires
+    `{safety_report}`) throws `KeyError: Context variable not found` instead of
+    hitting this fallback — confirmed via a live Langfuse trace where the
+    reviewer's call_llm span shows STOP/empty content, not an exception."""
+    if not (safety_report or "").strip():
+        return True
+    return _looks_like_erroneous_no_results(safety_report)
+
+
 def extract_leading_json_array(text: str) -> list[dict] | None:
     """Parse the JSON array the Analyst is instructed to emit as the first thing
     in its dossier (ANALYST_PROMPT STEP 1), ignoring any trailing commute/prose
@@ -758,16 +774,18 @@ def extract_leading_json_array(text: str) -> list[dict] | None:
 def build_fallback_recommendation(state) -> str | None:
     """
     Deterministic correction: if `search_status` (set by fetch_apartments) says
-    listings exist but the safety_report the Reviewer produced looks like the
-    erroneous NO_RESULTS bail-out, rebuild a correct message from analyst_dossier
-    directly — no LLM call needed. Returns None when no correction is needed
-    (either the pipeline behaved correctly, or there's nothing to fall back to).
+    listings exist but the Reviewer's safety_report is unusable — either the
+    erroneous NO_RESULTS bail-out, or simply missing because the Reviewer's LLM
+    turn produced no text (see `_safety_report_unusable`) — rebuild a correct
+    message from analyst_dossier directly — no LLM call needed. Returns None
+    when no correction is needed (either the pipeline behaved correctly, or
+    there's nothing to fall back to).
     """
     search_status = state.get("search_status")
     if search_status not in ("ok", "no_match_in_budget"):
         return None  # genuinely no results, or status was never recorded
 
-    if not _looks_like_erroneous_no_results(state.get("safety_report", "")):
+    if not _safety_report_unusable(state.get("safety_report", "")):
         return None  # pipeline behaved correctly; nothing to fix
 
     listings = extract_leading_json_array(state.get("analyst_dossier", "")) or []

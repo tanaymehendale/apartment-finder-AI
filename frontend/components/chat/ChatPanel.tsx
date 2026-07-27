@@ -5,16 +5,10 @@ import type { RequirementsPayload } from "@/lib/api";
 import { MessageBubble } from "./MessageBubble";
 import { AgentStatus } from "./AgentStatus";
 import { RequirementCards } from "./RequirementCards";
-import { MarkIcon, SendIcon, StopIcon, PlusIcon, SearchIcon, BuildingIcon, ClockIcon, ShieldIcon } from "@/lib/icons";
+import { MarkIcon, SendIcon, StopIcon, PlusIcon, SearchIcon } from "@/lib/icons";
 import { US_STATES } from "@/lib/usStates";
 
 type Phase = "landing" | "chatting" | "results";
-
-const SUGGESTIONS = [
-  "Apartments in Austin, TX under $1,500, near Tesla Gigafactory",
-  "Find me a 2BR in Seattle under $2,000, near Amazon HQ",
-  "Rentals in Denver, CO under $1,800, near Denver International Airport",
-];
 
 const fieldInputClass =
   "w-full bg-transparent text-sm text-neutral-900 placeholder:text-neutral-400 outline-none";
@@ -113,45 +107,24 @@ export function ChatPanel({ phase, messages, agentStatus, isStreaming, onSend, o
   if (phase === "landing") {
     return (
       <div className="flex flex-col items-center h-full overflow-y-auto px-6 py-10 bg-background">
-        <div className="w-full max-w-3xl flex flex-col items-center gap-7">
-          {/* Brand lockup */}
-          <div className="flex items-center gap-2 text-neutral-400">
-            <MarkIcon className="w-4 h-4" />
-            <span className="text-xs font-semibold tracking-wide uppercase">ApartmentFinder AI</span>
+        <div className="w-full max-w-3xl flex flex-col items-center gap-6">
+          {/* Brand lockup — the page's visual anchor, not a footnote */}
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-primary-600 flex items-center justify-center shadow-sm">
+              <MarkIcon className="w-6 h-6 text-white" />
+            </div>
+            <span className="text-2xl font-display font-bold text-neutral-900 tracking-tight">ApartmentFinder AI</span>
           </div>
 
-          {/* Hero */}
-          <div className="flex flex-col items-center gap-2 text-center animate-reveal">
-            <h1 className="font-display font-bold text-3xl text-neutral-900 tracking-tight">
-              Search apartments, backed by real data
-            </h1>
-            <p className="text-base text-neutral-500 max-w-lg leading-relaxed">
-              Real listings, live commute times, and AI-researched neighborhood safety —
-              compared and ranked for you in one search.
-            </p>
-          </div>
-
-          {/* Capability strip — sets expectations before the form; a search
-              tool needs to demonstrate it has real inventory/data, not just
-              accept a prompt. */}
-          <div
-            className="w-full flex flex-wrap items-center justify-center gap-x-6 gap-y-1.5 text-xs font-medium text-neutral-500 animate-reveal"
-            style={{ animationDelay: "60ms" }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <BuildingIcon className="w-3.5 h-3.5 text-primary-600" /> Real listings from Zillow &amp; RentCast
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <ClockIcon className="w-3.5 h-3.5 text-primary-600" /> Live commute times
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <ShieldIcon className="w-3.5 h-3.5 text-primary-600" /> AI-researched safety
-            </span>
-          </div>
+          {/* Hero — one line carries the pitch; the capability strip that used
+              to repeat it beneath was cut as redundant. */}
+          <p className="text-center text-base text-neutral-500 max-w-lg leading-relaxed animate-reveal">
+            Real listings, live commute times, and AI-researched safety — ranked for you in one search.
+          </p>
 
           {/* Structured search bar — the primary path (F3 structured intake,
               already supported end-to-end by the backend). */}
-          <div className="w-full animate-reveal" style={{ animationDelay: "110ms" }}>
+          <div className="w-full animate-reveal" style={{ animationDelay: "80ms" }}>
             <div className="flex flex-col md:flex-row items-stretch bg-surface border border-neutral-200 rounded-2xl shadow-md overflow-hidden divide-y md:divide-y-0 md:divide-x divide-neutral-100 focus-within:border-primary-400 transition-colors">
               <Field label="City" className="md:flex-[1.3]">
                 <input
@@ -212,14 +185,21 @@ export function ChatPanel({ phase, messages, agentStatus, isStreaming, onSend, o
             </div>
           </div>
 
-          {/* Optional refinement cards (P2-5) — always visible, not hidden
-              behind a click, so first-time visitors can see what's available. */}
-          <div className="w-full animate-reveal" style={{ animationDelay: "160ms" }}>
+          {/* Optional refinement cards (P2-5) — a single-line row of filter
+              pills, always visible so first-time visitors see what's
+              available without it dominating the page. `relative z-10`:
+              `animate-reveal`'s keyframe ends on a non-`none` transform
+              (translateY(0) scale(1)), which makes this wrapper its own
+              stacking context — without an explicit z-index here, the filter
+              popovers painted inside it lose to the divider/free-text
+              siblings below despite their own z-20, since sibling stacking
+              contexts with z-index:auto paint in DOM order. */}
+          <div className="relative z-10 w-full animate-reveal" style={{ animationDelay: "130ms" }}>
             <RequirementCards onChange={handleReqChange} />
           </div>
 
           {/* Divider to the secondary, free-text path */}
-          <div className="w-full flex items-center gap-3 animate-reveal" style={{ animationDelay: "200ms" }}>
+          <div className="w-full flex items-center gap-3 animate-reveal" style={{ animationDelay: "170ms" }}>
             <div className="flex-1 h-px bg-neutral-200" />
             <span className="text-xs font-medium text-neutral-400 uppercase tracking-wide whitespace-nowrap">
               or describe it in your own words
@@ -228,7 +208,7 @@ export function ChatPanel({ phase, messages, agentStatus, isStreaming, onSend, o
           </div>
 
           {/* Free-text input — always visible secondary path (not toggle-revealed) */}
-          <div className="w-full animate-reveal" style={{ animationDelay: "240ms" }}>
+          <div className="w-full animate-reveal" style={{ animationDelay: "210ms" }}>
             <div className="flex items-end gap-3 bg-surface border border-neutral-200 rounded-2xl px-4 py-3 shadow-xs focus-within:border-primary-400 focus-within:ring-2 focus-within:ring-primary-100 transition-all">
               <textarea
                 ref={textareaRef}
@@ -249,18 +229,6 @@ export function ChatPanel({ phase, messages, agentStatus, isStreaming, onSend, o
               >
                 <SendIcon className="w-4 h-4" />
               </button>
-            </div>
-            <div className="flex flex-wrap items-center justify-center gap-2 mt-3">
-              <span className="text-xs text-neutral-400">Try:</span>
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => onSend(s, reqPayload as RequirementsPayload)}
-                  className="text-xs text-neutral-500 bg-neutral-50 border border-neutral-100 rounded-full px-3 py-1 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50 transition-all"
-                >
-                  {s}
-                </button>
-              ))}
             </div>
           </div>
         </div>

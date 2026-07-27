@@ -4,6 +4,7 @@ import Map, { Marker, Popup, Source, Layer, type MapRef } from "react-map-gl/map
 import "mapbox-gl/dist/mapbox-gl.css";
 import type { Apartment, LandmarkInfo } from "@/lib/types";
 import { authHeaders } from "@/lib/api";
+import { streetViewUrl } from "@/lib/photo";
 import { PinIcon, ClockIcon, ExternalLinkIcon, RouteIcon } from "@/lib/icons";
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
@@ -277,18 +278,22 @@ export function MapView({ apartments, highlightedId, onHighlight, landmark }: Pr
 function AptPopup({ apt, index, landmark }: { apt: Apartment; index: number; landmark?: LandmarkInfo | null }) {
   const rankLabel = RANK_LABELS[index] ?? `#${index + 1}`;
   const rankColor = RANK_HEX[index] ?? "oklch(46% 0.014 35)";
+  const [photoFailed, setPhotoFailed] = useState(false);
+  // Real-time fallback: RentCast/Apify rarely have a listing photo, so fall back
+  // to a Street View shot of the listing's own coordinates (see lib/photo.ts).
+  const photo = apt.photos?.[0] ?? (photoFailed ? null : streetViewUrl(apt.latitude, apt.longitude));
 
   return (
     <div className="text-xs" style={{ fontFamily: "var(--font-body), sans-serif", padding: "10px 12px 12px" }}>
       {/* Photo */}
-      {apt.photos && apt.photos.length > 0 && (
+      {photo && (
         <div style={{ margin: "-10px -12px 8px", overflow: "hidden", borderRadius: "18px 18px 0 0" }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={apt.photos[0]}
+            src={photo}
             alt="Listing"
             style={{ width: "100%", height: "120px", objectFit: "cover", display: "block" }}
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+            onError={() => setPhotoFailed(true)}
           />
         </div>
       )}

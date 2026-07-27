@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RequirementsPayload } from "@/lib/api";
-import { CheckCircleIcon, PlusIcon } from "@/lib/icons";
+import { CheckCircleIcon, ChevronDownIcon, PlusIcon } from "@/lib/icons";
 
 type Proximity = { label: string; kind: "named" | "category" | "transit" };
 
@@ -29,10 +29,11 @@ const ROOM_OPTS = [
   { label: "2", v: 2 },
   { label: "3+", v: 3 },
 ];
-// Transit (Caltrain/bus) → Places typed Nearby Search for the nearest real station;
-// the rest are categories → Places "nearest X" text search.
+// Transit (train/bus) → Places typed Nearby Search for the nearest real station;
+// the rest are categories → Places "nearest X" text search. "Train station" (not
+// a specific regional system) so the default reads generically nationwide.
 const QUICK_NEAR: Proximity[] = [
-  { label: "Caltrain", kind: "transit" },
+  { label: "Train station", kind: "transit" },
   { label: "Bus stop", kind: "transit" },
   { label: "Grocery store", kind: "category" },
   { label: "Gym", kind: "category" },
@@ -64,6 +65,65 @@ function Chip({
   );
 }
 
+// A compact filter pill that opens a popover with the real controls — keeps the
+// whole filter row to a single line instead of a page-length vertical stack.
+function FilterPill({
+  label,
+  summary,
+  active,
+  children,
+}: {
+  label: string;
+  summary: string;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocPointerDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={`inline-flex items-center gap-1.5 pl-3.5 pr-2.5 py-2 text-sm font-medium rounded-xl border transition-all ${
+          active
+            ? "bg-primary-50 text-primary-700 border-primary-200"
+            : "bg-surface text-neutral-600 border-neutral-200 hover:border-neutral-300"
+        }`}
+      >
+        <span className={active ? "text-primary-500" : "text-neutral-400"}>{label}</span>
+        {summary}
+        <ChevronDownIcon
+          className={`w-3.5 h-3.5 transition-transform ${active ? "text-primary-400" : "text-neutral-400"} ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="absolute z-20 top-full left-0 mt-2 min-w-[16rem] bg-surface border border-neutral-200 rounded-2xl shadow-lg p-3">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RequirementCards({ onChange }: Props) {
   const [bedrooms, setBedrooms] = useState(0);
   const [bathrooms, setBathrooms] = useState(0);
@@ -71,6 +131,14 @@ export function RequirementCards({ onChange }: Props) {
   const [perPerson, setPerPerson] = useState(false);
   const [proximity, setProximity] = useState<Proximity[]>([]);
   const [custom, setCustom] = useState("");
+
+  // Intelligent filter: "budget is per person" only makes sense once there's
+  // someone to split with. Surface it at 2+ roommates, and clear a stale
+  // selection if the user dials roommates back down below that.
+  const showBudgetBasis = roommates >= 2;
+  useEffect(() => {
+    if (!showBudgetBasis && perPerson) setPerPerson(false);
+  }, [showBudgetBasis, perPerson]);
 
   // Rebuild the optional-only payload whenever a selection changes. Only fields the
   // user actually changed from the default are included, so an untouched panel emits
@@ -102,58 +170,66 @@ export function RequirementCards({ onChange }: Props) {
     setCustom("");
   }
 
-  const isActive = (label: string) =>
+  const isNearActive = (label: string) =>
     proximity.some((x) => x.label.toLowerCase() === label.toLowerCase());
 
+  const bedSummary = BED_OPTS.find((o) => o.v === bedrooms)?.label ?? "Any";
+  const bathSummary = BATH_OPTS.find((o) => o.v === bathrooms)?.label ?? "Any";
+  const roomSummary = ROOM_OPTS.find((o) => o.v === roommates)?.label ?? "Just me";
+  const nearSummary = proximity.length === 0 ? "Add" : `${proximity.length} selected`;
+
   return (
-    <div className="w-full">
-      <span className="block text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-2">
-        Preferences <span className="normal-case font-normal text-neutral-400">(optional)</span>
-      </span>
+    <div className="w-full flex flex-wrap items-center gap-2">
+      <FilterPill label="Beds" summary={bedSummary} active={bedrooms > 0}>
+        <div className="flex flex-wrap gap-2">
+          {BED_OPTS.map((o) => (
+            <Chip key={o.label} active={bedrooms === o.v} onClick={() => setBedrooms(o.v)}>
+              {o.label}
+            </Chip>
+          ))}
+        </div>
+      </FilterPill>
 
-      <div className="w-full bg-surface border border-neutral-200 rounded-2xl p-4 shadow-sm flex flex-col gap-4 text-left">
-        {/* Bedrooms */}
-          <Section label="Bedrooms">
-            {BED_OPTS.map((o) => (
-              <Chip key={o.label} active={bedrooms === o.v} onClick={() => setBedrooms(o.v)}>
-                {o.label}
-              </Chip>
-            ))}
-          </Section>
+      <FilterPill label="Baths" summary={bathSummary} active={bathrooms > 0}>
+        <div className="flex flex-wrap gap-2">
+          {BATH_OPTS.map((o) => (
+            <Chip key={o.label} active={bathrooms === o.v} onClick={() => setBathrooms(o.v)}>
+              {o.label}
+            </Chip>
+          ))}
+        </div>
+      </FilterPill>
 
-          {/* Bathrooms */}
-          <Section label="Bathrooms">
-            {BATH_OPTS.map((o) => (
-              <Chip key={o.label} active={bathrooms === o.v} onClick={() => setBathrooms(o.v)}>
-                {o.label}
-              </Chip>
-            ))}
-          </Section>
+      <FilterPill label="Roommates" summary={roomSummary} active={roommates > 0}>
+        <div className="flex flex-wrap gap-2">
+          {ROOM_OPTS.map((o) => (
+            <Chip key={o.label} active={roommates === o.v} onClick={() => setRoommates(o.v)}>
+              {o.label}
+            </Chip>
+          ))}
+        </div>
+      </FilterPill>
 
-          {/* Roommates + budget basis */}
-          <Section label="Roommates">
-            {ROOM_OPTS.map((o) => (
-              <Chip key={o.label} active={roommates === o.v} onClick={() => setRoommates(o.v)}>
-                {o.label}
-              </Chip>
-            ))}
-          </Section>
-
-          <Section label="Budget is">
+      {showBudgetBasis && (
+        <FilterPill label="Budget" summary={perPerson ? "Per person" : "Total"} active={perPerson}>
+          <div className="flex flex-wrap gap-2">
             <Chip active={!perPerson} onClick={() => setPerPerson(false)}>
               Total
             </Chip>
             <Chip active={perPerson} onClick={() => setPerPerson(true)}>
               Per person
             </Chip>
-          </Section>
+          </div>
+        </FilterPill>
+      )}
 
-          {/* Also near */}
-          <Section label="Also near">
+      <FilterPill label="Near" summary={nearSummary} active={proximity.length > 0}>
+        <div className="flex flex-col gap-3 w-64">
+          <div className="flex flex-wrap gap-2">
             {QUICK_NEAR.map((p) => (
-              <Chip key={p.label} active={isActive(p.label)} onClick={() => toggleNear(p)}>
+              <Chip key={p.label} active={isNearActive(p.label)} onClick={() => toggleNear(p)}>
                 <span className="inline-flex items-center gap-1">
-                  {isActive(p.label) ? (
+                  {isNearActive(p.label) ? (
                     <CheckCircleIcon className="w-3.5 h-3.5" />
                   ) : (
                     <PlusIcon className="w-3 h-3" />
@@ -172,9 +248,7 @@ export function RequirementCards({ onChange }: Props) {
                   </span>
                 </Chip>
               ))}
-          </Section>
-
-          {/* Custom amenity */}
+          </div>
           <div className="flex items-center gap-2">
             <input
               value={custom}
@@ -185,7 +259,7 @@ export function RequirementCards({ onChange }: Props) {
                   addCustom();
                 }
               }}
-              placeholder="Add another, e.g. Indian grocery"
+              placeholder="e.g. Indian grocery"
               aria-label="Add a custom nearby place"
               className="flex-1 text-sm px-3 py-2 rounded-xl border border-neutral-200 outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100"
             />
@@ -198,16 +272,8 @@ export function RequirementCards({ onChange }: Props) {
               Add
             </button>
           </div>
-      </div>
-    </div>
-  );
-}
-
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-2">
-      <span className="text-xs font-semibold uppercase tracking-wide text-neutral-400">{label}</span>
-      <div className="flex flex-wrap gap-2">{children}</div>
+        </div>
+      </FilterPill>
     </div>
   );
 }

@@ -4,6 +4,7 @@ FastAPI server — exposes the ADK apartment finder agent over HTTP with SSE str
 import asyncio
 import json
 import os
+import httpx
 import polyline as polyline_codec
 from dotenv import load_dotenv
 
@@ -15,7 +16,7 @@ load_dotenv()
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
@@ -36,16 +37,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ApartmentFinder API", lifespan=lifespan)
 
 # Phase 5 (partial) — single-owner Firebase Auth gate, replacing Phase 3.9's
-# shared-secret ACCESS_KEY. Every route except /api/health requires a Firebase ID
-# token (`Authorization: Bearer <token>`, minted client-side by frontend/lib/
-# firebase.ts) whose decoded, verified email matches OWNER_EMAIL exactly — this
-# is still single-owner access, not open registration; per-user API keys are a
-# separate, deferred piece. No-op when OWNER_EMAIL isn't set (local dev needs no
-# config), same convention as tracing.init()/the old ACCESS_KEY. Registered
-# BEFORE CORSMiddleware below so CORS stays the outermost middleware and answers
-# preflight OPTIONS requests itself — this gate never sees them.
+# shared-secret ACCESS_KEY. Every route except /api/health and /api/photo
+# requires a Firebase ID token (`Authorization: Bearer <token>`, minted
+# client-side by frontend/lib/firebase.ts) whose decoded, verified email
+# matches OWNER_EMAIL exactly — this is still single-owner access, not open
+# registration; per-user API keys are a separate, deferred piece. /api/photo is
+# exempted too: it's loaded via a plain <img src> tag, which can't carry a
+# bearer header, and it only ever serves a public Street View image for
+# coordinates already visible in the authenticated UI — low sensitivity, same
+# narrow-exemption shape as /api/health. No-op when OWNER_EMAIL isn't set
+# (local dev needs no config), same convention as tracing.init()/the old
+# ACCESS_KEY. Registered BEFORE CORSMiddleware below so CORS stays the
+# outermost middleware and answers preflight OPTIONS requests itself — this
+# gate never sees them.
 _OWNER_EMAIL = os.getenv("OWNER_EMAIL")
 _FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
+_AUTH_EXEMPT_PATHS = {"/api/health", "/api/photo"}
 # Module-level so the fetched Google public-cert cache persists across requests
 # on a warm instance instead of being refetched every call.
 _google_auth_request = google_requests.Request()
@@ -53,7 +60,7 @@ _google_auth_request = google_requests.Request()
 
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
-    if _OWNER_EMAIL and request.url.path != "/api/health":
+    if _OWNER_EMAIL and request.url.path not in _AUTH_EXEMPT_PATHS:
         authz = request.headers.get("authorization", "")
         token = authz[7:].strip() if authz.lower().startswith("bearer ") else ""
         if not token:
@@ -171,6 +178,49 @@ async def get_directions(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+_STREETVIEW_URL = "https://maps.googleapis.com/maps/api/streetview"
+
+
+@app.get("/api/photo")
+async def get_photo(
+    lat: float = Query(..., description="Listing latitude"),
+    lng: float = Query(..., description="Listing longitude"),
+):
+    """
+    Real-time listing photo fallback (RentCast/Apify rarely provide one): a
+    Street View image of the listing's own coordinates, proxied server-side so
+    GOOGLE_MAPS_API_KEY never reaches the browser (this route is called via a
+    plain <img src>, which can't send the app's auth header — see the
+    auth_gate exemption above). `return_error_code=true` makes Google 4xx
+    instead of returning its generic "no imagery" placeholder image, so we can
+    404 and let the frontend fall back to its own icon placeholder.
+    """
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not key:
+        raise HTTPException(status_code=404, detail="No imagery")
+    try:
+        resp = httpx.get(
+            _STREETVIEW_URL,
+            params={
+                "size": "640x400",
+                "location": f"{lat},{lng}",
+                "fov": 90,
+                "return_error_code": "true",
+                "key": key,
+            },
+            timeout=10.0,
+        )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=404, detail="No imagery")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="No imagery")
+    return Response(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "image/jpeg"),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.get("/api/health")

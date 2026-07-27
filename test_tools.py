@@ -649,6 +649,29 @@ def test_build_fallback_recommendation_corrects_false_negative():
     print(f"   ✅ corrected message built from state: {msg.splitlines()[0]}")
 
 
+def test_build_fallback_recommendation_corrects_missing_safety_report():
+    print("\n🧪 status-routing: build_fallback_recommendation corrects a MISSING safety_report")
+    from apartment_finder.tools import build_fallback_recommendation
+
+    # Observed live via Langfuse: the Reviewer's Gemini call can finish with
+    # finish_reason=STOP but zero content parts (no text, no google_search call) —
+    # ADK's output_key never writes state in that case, so safety_report is simply
+    # absent (not the "STATUS: NO_RESULTS" marker). Before this fix, that fell
+    # through build_fallback_recommendation as a no-op and the Summarizer's prompt
+    # template crashed with `KeyError: Context variable not found: safety_report`.
+    listings = [{"address": "1 Test St", "monthly_price": 3100, "over_budget": False}]
+    state = {
+        "search_status": "ok",
+        "safety_report": "",  # never set — Reviewer produced no text this turn
+        "analyst_dossier": json.dumps(listings) + "\n\n{\"rows\": []}",
+        "user_requirements": json.dumps({"city": "Bellevue", "state": "WA", "budget": 1500}),
+    }
+    msg = build_fallback_recommendation(state)
+    assert msg is not None, "must correct when safety_report is missing but listings exist"
+    assert "Bellevue" in msg and "1 Test St" in msg, msg
+    print(f"   ✅ corrected message built from state despite empty safety_report: {msg.splitlines()[0]}")
+
+
 def test_build_fallback_recommendation_noop_when_consistent():
     print("\n🧪 status-routing: build_fallback_recommendation is a no-op when nothing is wrong")
     from apartment_finder.tools import build_fallback_recommendation
@@ -834,6 +857,7 @@ if __name__ == "__main__":
     test_usage_store_firestore_failure_is_fail_open()
     test_usage_store_file_backend_unchanged()
     test_build_fallback_recommendation_corrects_false_negative()
+    test_build_fallback_recommendation_corrects_missing_safety_report()
     test_build_fallback_recommendation_noop_when_consistent()
     test_reviewer_callback_skips_on_true_no_results()
     test_summarizer_callback_overrides_false_negative()

@@ -1,7 +1,9 @@
 "use client";
+import { useState } from "react";
 import type { Apartment, LandmarkInfo } from "@/lib/types";
 import { CommuteBadge } from "./CommuteBadge";
 import { BedIcon, BathIcon, PinIcon, ExternalLinkIcon, RouteIcon, BuildingIcon } from "@/lib/icons";
+import { streetViewUrl } from "@/lib/photo";
 
 interface Props {
   apartment: Apartment;
@@ -46,7 +48,8 @@ export function ApartmentCard({ apartment, index, isHighlighted, onHover, roomma
   // P2-3: per-person rent split when the user is sharing with roommates.
   const occupants = roommates + 1;
   const perPerson = roommates > 0 ? Math.round(apartment.monthly_price / occupants) : null;
-  const photo = apartment.photos?.[0];
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const photo = apartment.photos?.[0] ?? (photoFailed ? null : streetViewUrl(apartment.latitude, apartment.longitude));
 
   return (
     <div
@@ -67,7 +70,12 @@ export function ApartmentCard({ apartment, index, isHighlighted, onHover, roomma
       <div className="relative w-full aspect-[16/10] bg-neutral-100">
         {photo ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={photo} alt="" className="w-full h-full object-cover" />
+          <img
+            src={photo}
+            alt=""
+            className="w-full h-full object-cover"
+            onError={() => setPhotoFailed(true)}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <BuildingIcon className="w-9 h-9 text-neutral-300" />
