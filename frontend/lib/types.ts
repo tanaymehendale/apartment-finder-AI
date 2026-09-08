@@ -1,0 +1,74 @@
+export interface Apartment {
+  id: string;
+  agent_description: string;
+  monthly_price: number;
+  address: string;
+  latitude: number;
+  longitude: number;
+  bedrooms?: number;
+  bathrooms?: number;
+  square_feet?: number;
+  listing_url?: string;
+  listing_source?: string;
+  over_budget?: boolean;
+  commute?: CommuteInfo;
+  safety_summary?: string;
+  proximity_results?: ProximityResult[];
+  photos?: string[];
+}
+
+// P2-4: nearest amenity match for a proximity preference the user asked about.
+export interface ProximityResult {
+  label: string;        // what the user searched for, e.g. "Caltrain", "Indian grocery"
+  name: string;         // resolved place name, e.g. "Sunnyvale Caltrain Station"
+  distance_text: string; // e.g. "0.8 mi"
+}
+
+export interface CommuteInfo {
+  duration_text: string;
+  distance_text: string;
+  duration_seconds: number;
+}
+
+export interface LandmarkInfo {
+  name: string;
+  lat: number;
+  lng: number;
+}
+
+export type AgentName = "Manager" | "Analyst" | "Reviewer" | "Summarizer" | "Research Team";
+
+export interface AgentStatusEvent {
+  agent: AgentName;
+  step: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
+}
+
+export interface ConversationSession {
+  id: string;
+  title: string;
+  createdAt: string;
+}
+
+export type SSEEvent =
+  | { type: "token"; content: string; author: string }
+  | { type: "status"; agent: AgentName; step: string }
+  | { type: "waiting"; seconds: number; agent: string }
+  | {
+      type: "state";
+      analyst_dossier: string;
+      safety_report: string;
+      user_requirements: string;
+      final_recommendation?: string;
+      landmark_lat?: number;
+      landmark_lng?: number;
+      landmark_name?: string;
+    }
+  | { type: "done" }
+  | { type: "error"; content: string };

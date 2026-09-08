@@ -1,0 +1,34 @@
+# Keep the image small and, more importantly, keep secrets out of it.
+
+# SECRETS — .env holds live API keys. Never let it into an image layer.
+.env
+.env.*
+
+# ~195MB of retired CSVs (P1-1: kept in git history only, unused at runtime).
+# The usage counters that DO live in data/ are ephemeral on Cloud Run anyway —
+# production uses USAGE_STORE=firestore instead.
+data/
+
+# Frontend deploys separately (Vercel), and node_modules is enormous.
+frontend/
+
+# Local Python env — platform-specific, would break the linux image.
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Not needed at runtime
+test_*.py
+preprocessing.py
+main.py
+*.md
+.git/
+.gitignore
+.github/
+.claude/
+.playwright-mcp/
+*.png
+node_modules/
+package.json
+package-lock.json

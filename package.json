@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "dev": "concurrently \"uvicorn api.server:app --host 127.0.0.1 --port 8000 --reload\" \"npm run dev --prefix frontend\"",
+    "api": "uvicorn api.server:app --host 127.0.0.1 --port 8000 --reload",
+    "ui": "npm run dev --prefix frontend",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,5 +15,8 @@
   "dependencies": {
     "@modelcontextprotocol/server-google-maps": "^0.6.2",
     "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }
