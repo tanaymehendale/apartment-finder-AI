@@ -39,7 +39,7 @@ def _fake_listing(price, beds=1, baths=1, idx=0):
 
 def _with_fake_pool(pool):
     """Swap the provider chain for a synthetic pool (no network)."""
-    tools._PROVIDERS = [("fake", lambda c, s, mb, mba: pool)]
+    tools._PROVIDERS = [("fake", lambda c, s, mb, mba, api_key_override=None: pool)]
 
 
 # ─── Offline: budget-overflow partition (P1-4) ───────────────────────────────
@@ -74,11 +74,14 @@ def test_provider_merge_supplements_thin_pool():
     apify_pool = [_fake_listing(p, idx=i + 1) for i, p in enumerate([2400, 2600, 2800])]
     calls = {"apify": 0}
 
-    def fake_apify(c, s, mb, mba):
+    def fake_apify(c, s, mb, mba, api_key_override=None):
         calls["apify"] += 1
         return apify_pool
 
-    tools._PROVIDERS = [("rentcast", lambda c, s, mb, mba: rentcast_pool), ("apify", fake_apify)]
+    tools._PROVIDERS = [
+        ("rentcast", lambda c, s, mb, mba, api_key_override=None: rentcast_pool),
+        ("apify", fake_apify),
+    ]
     result = json.loads(fetch_apartments("Austin", "TX", 3000))
     assert calls["apify"] == 1, "thin RentCast pool must fall through to Apify"
     assert isinstance(result, list) and len(result) == 4, result  # 3 in-budget + 1 stretch (3200)
@@ -92,11 +95,14 @@ def test_provider_merge_skips_second_when_sufficient():
     rentcast_pool = [_fake_listing(p, idx=i) for i, p in enumerate([2000, 2200, 2500])]
     calls = {"apify": 0}
 
-    def fake_apify(c, s, mb, mba):
+    def fake_apify(c, s, mb, mba, api_key_override=None):
         calls["apify"] += 1
         return [_fake_listing(2100, idx=99)]
 
-    tools._PROVIDERS = [("rentcast", lambda c, s, mb, mba: rentcast_pool), ("apify", fake_apify)]
+    tools._PROVIDERS = [
+        ("rentcast", lambda c, s, mb, mba, api_key_override=None: rentcast_pool),
+        ("apify", fake_apify),
+    ]
     result = json.loads(fetch_apartments("Austin", "TX", 3000))
     assert calls["apify"] == 0, "Apify must NOT be queried when RentCast alone clears the threshold"
     assert len(result) == 3, result
@@ -107,18 +113,18 @@ def test_search_status_recorded_deterministically():
     print("\n🧪 fetch_apartments records `search_status` in tool_context.state (code, not prose)")
     ctx = _FakeToolContext({})
     pool_ok = [_fake_listing(p, idx=i) for i, p in enumerate([2000, 2200, 2500])]
-    tools._PROVIDERS = [("fake", lambda c, s, mb, mba: pool_ok)]
+    tools._PROVIDERS = [("fake", lambda c, s, mb, mba, api_key_override=None: pool_ok)]
     fetch_apartments("Austin", "TX", 2600, tool_context=ctx)
     assert ctx.state["search_status"] == "ok", ctx.state
 
     ctx2 = _FakeToolContext({})
-    tools._PROVIDERS = [("fake", lambda c, s, mb, mba: pool_ok)]
+    tools._PROVIDERS = [("fake", lambda c, s, mb, mba, api_key_override=None: pool_ok)]
     fetch_apartments("Austin", "TX", 500, tool_context=ctx2)
     assert ctx2.state["search_status"] == "no_match_in_budget", ctx2.state
     assert ctx2.state["suggested_budget"] == round((2000 + 2200 + 2500) / 3), ctx2.state
 
     ctx3 = _FakeToolContext({})
-    tools._PROVIDERS = [("fake", lambda c, s, mb, mba: [])]
+    tools._PROVIDERS = [("fake", lambda c, s, mb, mba, api_key_override=None: [])]
     fetch_apartments("Austin", "TX", 2600, tool_context=ctx3)
     assert ctx3.state["search_status"] == "no_results", ctx3.state
     print("   ✅ ok / no_match_in_budget (+ suggested_budget) / no_results all recorded correctly")
@@ -127,14 +133,14 @@ def test_search_status_recorded_deterministically():
 def test_per_person_price_single_division():
     print("\n🧪 per-person: fetch_apartments attaches a single, correctly-divided per_person_price")
     pool = [_fake_listing(4910, idx=0), _fake_listing(2000, idx=1)]
-    tools._PROVIDERS = [("fake", lambda c, s, mb, mba: pool)]
+    tools._PROVIDERS = [("fake", lambda c, s, mb, mba, api_key_override=None: pool)]
     # roommates=1 → 2 occupants. Must be monthly_price / 2, computed ONCE (not re-split).
     result = json.loads(fetch_apartments("Redmond", "WA", 3600, roommates=1))
     for l in result:
         assert l["per_person_price"] == round(l["monthly_price"] / 2), l
         assert l["per_person_label"] == f"${l['per_person_price']:,.0f} per person, split 2 ways", l
     # Solo (roommates=0, the default) → no per-person split at all.
-    tools._PROVIDERS = [("fake", lambda c, s, mb, mba: pool)]
+    tools._PROVIDERS = [("fake", lambda c, s, mb, mba, api_key_override=None: pool)]
     result_solo = json.loads(fetch_apartments("Redmond", "WA", 3600))
     assert all(l["per_person_price"] is None and l["per_person_label"] is None for l in result_solo), result_solo
     print(f"   ✅ $4,910/mo, 1 roommate → {result[0]['per_person_label']} (single split, label matches N)")
@@ -143,7 +149,7 @@ def test_per_person_price_single_division():
 def test_per_person_label_matches_actual_occupant_count():
     print("\n🧪 per-person: per_person_label's 'split N ways' always matches the real occupant count")
     pool = [_fake_listing(3628, idx=0)]
-    tools._PROVIDERS = [("fake", lambda c, s, mb, mba: pool)]
+    tools._PROVIDERS = [("fake", lambda c, s, mb, mba, api_key_override=None: pool)]
     # roommates=2 → 3 occupants — this is the exact case that previously mislabeled "split 2 ways".
     result = json.loads(fetch_apartments("Redmond", "WA", 4000, roommates=2))
     assert result[0]["per_person_price"] == round(3628 / 3), result
@@ -156,7 +162,7 @@ def test_layout_filter_excludes_smaller():
     pool = [_fake_listing(2000, beds=b, idx=i) for i, b in enumerate([1, 2, 3])]
     # Provider applies the filter; simulate by filtering in the fake provider.
     tools._PROVIDERS = [
-        ("fake", lambda c, s, mb, mba: [p for p in pool if (p["bedrooms"] or 0) >= mb])
+        ("fake", lambda c, s, mb, mba, api_key_override=None: [p for p in pool if (p["bedrooms"] or 0) >= mb])
     ]
     result = json.loads(fetch_apartments("Austin", "TX", 3000, min_bedrooms=2))
     assert all(r["bedrooms"] >= 2 for r in result), result

@@ -9,12 +9,14 @@ from typing import AsyncGenerator
 from google.adk.runners import InMemoryRunner
 from google.adk.events import Event, EventActions
 from google.genai import types
-from apartment_finder.agent import root_agent
+from apartment_finder.agent import build_agent_tree
 from apartment_finder.tools import _compute_requirements
-from apartment_finder import tracing
+from apartment_finder import tracing, user_profiles
 
-# In-memory registry: session_id → (runner, adk_session_id, user_id)
-_sessions: dict[str, tuple[InMemoryRunner, str, str]] = {}
+# In-memory registry: session_id → (runner, adk_session_id, user_id, uid)
+# `uid` is the authenticated Firebase user id (None for unauthenticated/local-dev
+# sessions, in which case BYOK/quota enforcement below is a no-op).
+_sessions: dict[str, tuple[InMemoryRunner, str, str, str | None]] = {}
 
 # Cancel flags: session_id → bool
 _cancel_flags: dict[str, bool] = {}
@@ -30,10 +32,23 @@ AGENT_LABELS = {
 }
 
 
-async def create_session() -> str:
-    """Create a new ADK session and return an opaque session_id."""
+async def create_session(uid: str | None = None, email: str | None = None) -> str:
+    """Create a new ADK session and return an opaque session_id.
+
+    `uid`/`email` (Phase 5 BYOK) come from the verified Firebase token attached
+    to the request by api/server.py's auth_gate. When present, this session's
+    agent tree is built with the user's own OpenAI key if they've set one (BYOK
+    active) — otherwise the app's own key, same as an unauthenticated session.
+    """
     session_id = str(uuid.uuid4())
-    runner = InMemoryRunner(agent=root_agent, app_name="apartment_finder")
+
+    openai_api_key = None
+    if uid:
+        await asyncio.to_thread(user_profiles.ensure_profile, uid, email or "")
+        openai_api_key = await asyncio.to_thread(user_profiles.get_decrypted_key, uid, "openai")
+
+    agent = build_agent_tree(openai_api_key=openai_api_key)
+    runner = InMemoryRunner(agent=agent, app_name="apartment_finder")
     # FU-9: pass our own id as the ADK session_id too, instead of letting
     # create_session() mint a second, separate internal uuid. Previously the two
     # ids diverged, and openinference's GoogleADKInstrumentor stamps its "session.id"
@@ -42,12 +57,16 @@ async def create_session() -> str:
     # different context-propagation mechanisms, so propagate_attributes never reaches
     # the instrumentor's ambient-context check) — so Langfuse traces showed a sessionId
     # no endpoint ever exposes. Using one id everywhere removes the mismatch at the root.
+    #
+    # `_user_uid` is the only per-user datum seeded into ADK session state — never
+    # a raw API key, since this state is what Langfuse traces (see tracing.py).
     adk_session = await runner.session_service.create_session(
         app_name="apartment_finder",
         user_id=session_id,
         session_id=session_id,
+        state={"_user_uid": uid} if uid else None,
     )
-    _sessions[session_id] = (runner, adk_session.id, session_id)
+    _sessions[session_id] = (runner, adk_session.id, session_id, uid)
     _cancel_flags[session_id] = False
     return session_id
 
@@ -85,7 +104,17 @@ async def stream_message(
         yield {"type": "done"}
         return
 
-    runner, adk_session_id, user_id = _sessions[session_id]
+    runner, adk_session_id, user_id, uid = _sessions[session_id]
+
+    if uid:
+        allowed, block_reason = await asyncio.to_thread(user_profiles.can_run, uid)
+        if not allowed:
+            # Never invoke the runner — no external API calls should be spent on
+            # a turn we're about to reject. Matches the "Session not found"
+            # short-circuit above.
+            yield {"type": "error", "content": block_reason}
+            yield {"type": "done"}
+            return
 
     message_text = message
     if requirements:
@@ -286,7 +315,7 @@ async def get_session_state(session_id: str) -> dict:
     """Return raw ADK session state for a given session."""
     if session_id not in _sessions:
         return {}
-    runner, adk_session_id, user_id = _sessions[session_id]
+    runner, adk_session_id, user_id, _uid = _sessions[session_id]
     try:
         adk_session = await runner.session_service.get_session(
             app_name="apartment_finder",

@@ -93,24 +93,6 @@ gemini_model = ResilientGemini(
     fallback=Gemini(model="gemini-2.5-flash", retry_options=retry_config),
 )
 
-# OpenAI for all other agents; reduces Gemini calls by ~75% per query.
-# OPENAI_API_KEY is read automatically from .env.
-openai_model = LiteLlm(model="openai/gpt-4o-mini", num_retries=5)
-
-# --- 1. THE ANALYST AGENT ---
-analyst = LlmAgent(
-    name="analyst",
-    model=openai_model,
-    description="Executes tools to find and analyze apartments.",
-    instruction=instructions.ANALYST_PROMPT,
-    tools=[
-        FunctionTool(tools.fetch_apartments),
-        FunctionTool(tools.check_commutes),
-        FunctionTool(tools.find_nearby_amenities),
-    ],
-    output_key="analyst_dossier"
-)
-
 # --- DETERMINISTIC STATUS-ROUTING GUARDS ---
 # `tools.fetch_apartments` records the TRUE search outcome in session state
 # (`search_status`) the moment it computes results — in code, not prose. The
@@ -142,42 +124,82 @@ def _summarizer_before_callback(callback_context):
     return types.Content(role="model", parts=[types.Part(text=fallback)])
 
 
-# --- 2. THE REVIEWER AGENT ---
-reviewer = LlmAgent(
-    name="reviewer",
-    model=gemini_model,
-    description="Checks neighborhood safety.",
-    instruction=instructions.REVIEWER_PROMPT,
-    tools=[google_search],
-    output_key="safety_report",
-    before_agent_callback=_reviewer_before_callback,
-)
+# Phase 5 (BYOK) — every LlmAgent/SequentialAgent node below can only ever be
+# attached to ONE tree: ADK's BaseAgent.__set_parent_agent_for_sub_agents raises
+# if a sub-agent's `parent_agent` is already set. So the whole tree (everything
+# an app-shared singleton could not survive multiple concurrent per-user trees)
+# is built fresh by this factory, called once per session in
+# api/session_manager.py. `gemini_model` above stays a module-level singleton —
+# it's a model backend, not a tree node, and per the tiered BYOK decision the
+# Reviewer always uses the app's own Gemini key, never a user-supplied one.
+def build_agent_tree(openai_api_key: str | None = None) -> LlmAgent:
+    """Build a fresh Manager→ResearchTeam agent tree.
 
-# --- 3. THE SUMMARIZER AGENT ---
-summarizer = LlmAgent(
-    name="summarizer",
-    model=openai_model,
-    description="Compiles research into a final pitch.",
-    instruction=instructions.SUMMARIZER_PROMPT,
-    output_key="final_recommendation",
-    before_agent_callback=_summarizer_before_callback,
-)
+    `openai_api_key=None` → LiteLlm falls back to reading OPENAI_API_KEY from
+    env (the app's own key) — this is the free-trial / no-BYOK path. Passing a
+    user's own key here is what makes Manager/Analyst/Summarizer run entirely
+    on their key for the rest of that session.
+    """
+    # OpenAI for all other agents; reduces Gemini calls by ~75% per query.
+    openai_model = LiteLlm(model="openai/gpt-4o-mini", api_key=openai_api_key, num_retries=5)
 
-# --- THE RESEARCH TEAM ---
-research_team = SequentialAgent(
-    name="ResearchTeam",
-    description="A team that finds, vets, and summarizes apartments.",
-    sub_agents=[analyst, reviewer, summarizer]
-)
+    # --- 1. THE ANALYST AGENT ---
+    analyst = LlmAgent(
+        name="analyst",
+        model=openai_model,
+        description="Executes tools to find and analyze apartments.",
+        instruction=instructions.ANALYST_PROMPT,
+        tools=[
+            FunctionTool(tools.fetch_apartments),
+            FunctionTool(tools.check_commutes),
+            FunctionTool(tools.find_nearby_amenities),
+        ],
+        output_key="analyst_dossier"
+    )
 
-# --- ROOT AGENT (MAIN) ---
-# store_requirements writes user input to session state before ResearchTeam runs,
-# avoiding the fragile "read last Manager message" pattern that breaks on one-shot queries.
-root_agent = LlmAgent(
-    name="manager",
-    description="Conversational agent that gathers user requirements.",
-    model=openai_model,
-    instruction=instructions.MANAGER_PROMPT,
-    tools=[FunctionTool(tools.store_requirements)],
-    sub_agents=[research_team]
-)
+    # --- 2. THE REVIEWER AGENT ---
+    reviewer = LlmAgent(
+        name="reviewer",
+        model=gemini_model,
+        description="Checks neighborhood safety.",
+        instruction=instructions.REVIEWER_PROMPT,
+        tools=[google_search],
+        output_key="safety_report",
+        before_agent_callback=_reviewer_before_callback,
+    )
+
+    # --- 3. THE SUMMARIZER AGENT ---
+    summarizer = LlmAgent(
+        name="summarizer",
+        model=openai_model,
+        description="Compiles research into a final pitch.",
+        instruction=instructions.SUMMARIZER_PROMPT,
+        output_key="final_recommendation",
+        before_agent_callback=_summarizer_before_callback,
+    )
+
+    # --- THE RESEARCH TEAM ---
+    research_team = SequentialAgent(
+        name="ResearchTeam",
+        description="A team that finds, vets, and summarizes apartments.",
+        sub_agents=[analyst, reviewer, summarizer]
+    )
+
+    # --- ROOT AGENT (MAIN) ---
+    # store_requirements writes user input to session state before ResearchTeam runs,
+    # avoiding the fragile "read last Manager message" pattern that breaks on one-shot queries.
+    return LlmAgent(
+        name="manager",
+        description="Conversational agent that gathers user requirements.",
+        model=openai_model,
+        instruction=instructions.MANAGER_PROMPT,
+        tools=[FunctionTool(tools.store_requirements)],
+        sub_agents=[research_team]
+    )
+
+
+# Module-level singleton, built with the app's own OPENAI_API_KEY (no BYOK) —
+# this is what `adk web` and the CLI (main.py) discover/import. The FastAPI
+# server (api/session_manager.py) does NOT use this; it calls build_agent_tree()
+# fresh per session so a BYOK user's own key can be swapped in.
+root_agent = build_agent_tree()

@@ -32,6 +32,9 @@ openinference-instrumentation-google-adk==0.1.17
 # default USAGE_STORE=file, but cheap to keep installed — imported lazily.
 google-cloud-firestore==2.28.0
 # Transitive via google-cloud-firestore, but pinned explicitly now that
-# api/server.py imports it directly (verify_firebase_token, for the OWNER_EMAIL
-# auth gate) — same "pin what you import" rule as the openai line above.
+# api/server.py imports it directly (verify_firebase_token, for the auth gate)
+# — same "pin what you import" rule as the openai line above.
 google-auth==2.43.0
+# Encrypts user-provided BYOK API keys at rest in Firestore (apartment_finder/
+# user_profiles.py). Fernet only — small, stable API, no transitive surprises.
+cryptography==43.0.3

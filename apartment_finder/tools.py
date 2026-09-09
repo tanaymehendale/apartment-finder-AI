@@ -374,20 +374,26 @@ def _save_rentcast_usage(usage: dict) -> None:
     _save_usage("rentcast", usage, _RENTCAST_USAGE_FILE)
 
 
-def _fetch_rentcast(city: str, state: str, min_bedrooms: int, min_bathrooms: float) -> list[dict] | None:
+def _fetch_rentcast(
+    city: str, state: str, min_bedrooms: int, min_bathrooms: float,
+    api_key_override: str | None = None,
+) -> list[dict] | None:
     global _rentcast_run_count
-    api_key = os.getenv("RENTCAST_API_KEY")
+    api_key = api_key_override or os.getenv("RENTCAST_API_KEY")
     if not api_key:
         return None  # Not configured; skip
 
-    if _rentcast_run_count >= _RENTCAST_MAX_PER_RUN:
-        print(f"   ⛔ RentCast per-run limit ({_RENTCAST_MAX_PER_RUN}) reached. Switching to next provider.")
-        return None
+    # A BYOK user's key draws against THEIR OWN RentCast quota, not the app's
+    # shared monthly pool — skip the app-wide guardrails entirely for it.
+    if not api_key_override:
+        if _rentcast_run_count >= _RENTCAST_MAX_PER_RUN:
+            print(f"   ⛔ RentCast per-run limit ({_RENTCAST_MAX_PER_RUN}) reached. Switching to next provider.")
+            return None
 
-    usage = _load_rentcast_usage()
-    if usage["count"] >= _RENTCAST_MONTHLY_LIMIT:
-        print(f"   ⛔ RentCast monthly limit ({_RENTCAST_MONTHLY_LIMIT}) reached. Switching to Apify fallback.")
-        return None
+        usage = _load_rentcast_usage()
+        if usage["count"] >= _RENTCAST_MONTHLY_LIMIT:
+            print(f"   ⛔ RentCast monthly limit ({_RENTCAST_MONTHLY_LIMIT}) reached. Switching to Apify fallback.")
+            return None
 
     # No maxPrice — P1-4 partitions client-side. bedrooms passed as a server-side
     # floor hint where supported; min_bathrooms filtered client-side below.
@@ -403,9 +409,12 @@ def _fetch_rentcast(city: str, state: str, min_bedrooms: int, min_bathrooms: flo
     response.raise_for_status()
 
     _rentcast_run_count += 1
-    usage["count"] += 1
-    _save_rentcast_usage(usage)
-    print(f"   📊 RentCast usage: {usage['count']}/{_RENTCAST_MONTHLY_LIMIT} this month | {_rentcast_run_count}/{_RENTCAST_MAX_PER_RUN} this run")
+    if not api_key_override:
+        usage["count"] += 1
+        _save_rentcast_usage(usage)
+        print(f"   📊 RentCast usage: {usage['count']}/{_RENTCAST_MONTHLY_LIMIT} this month | {_rentcast_run_count}/{_RENTCAST_MAX_PER_RUN} this run")
+    else:
+        print(f"   📊 RentCast (BYOK key): {_rentcast_run_count}/{_RENTCAST_MAX_PER_RUN} this run")
 
     listings = response.json()
     if not listings:
@@ -473,8 +482,11 @@ def _build_zillow_search_url(city: str, state: str, min_bedrooms: int, min_bathr
     return "https://www.zillow.com/homes/for_rent/?searchQueryState=" + urllib.parse.quote(json.dumps(query_state))
 
 
-def _fetch_apify(city: str, state: str, min_bedrooms: int, min_bathrooms: float) -> list[dict] | None:
-    api_key = os.getenv("APIFY_API_KEY")
+def _fetch_apify(
+    city: str, state: str, min_bedrooms: int, min_bathrooms: float,
+    api_key_override: str | None = None,
+) -> list[dict] | None:
+    api_key = api_key_override or os.getenv("APIFY_API_KEY")
     if not api_key:
         return None  # Not configured; skip
 
@@ -633,6 +645,10 @@ def fetch_apartments(
         tool_context: injected by ADK; used to deterministically record the search
             outcome (`search_status`) in session state so downstream agents don't
             have to infer "did we find anything" purely from prose (see agent.py).
+            Also carries `_user_uid` (Phase 5 BYOK) — when present, this is a
+            real signed-in user's search: it counts against their free-trial run
+            limit, and RentCast/Apify are called with THEIR OWN keys (if set in
+            their profile) instead of the app's shared keys.
 
     Returns one of (JSON string):
       • A list of up to 5 in-budget listings (tagged "over_budget": false), plus
@@ -654,11 +670,28 @@ def fetch_apartments(
     global _rentcast_run_count
     _rentcast_run_count = 0
 
+    # Phase 5 BYOK: a real fetch is about to happen (real external API calls,
+    # real cost) — this is the actual "run" the free-trial limit protects, so it's
+    # counted here rather than at the chat-turn level (a Manager turn that's just
+    # gathering requirements shouldn't consume a free run). Resolve the user's own
+    # RentCast/Apify keys, if any, so the provider chain below prefers them over
+    # the app's shared keys.
+    user_keys: dict[str, str | None] = {}
+    uid = tool_context.state.get("_user_uid") if tool_context is not None else None
+    if uid:
+        from . import user_profiles  # local import: user_profiles imports tools, avoid a cycle
+        user_profiles.increment_run_count(uid)
+        user_keys["rentcast"] = user_profiles.get_decrypted_key(uid, "rentcast")
+        user_keys["apify"] = user_profiles.get_decrypted_key(uid, "apify")
+
     pool: list[dict] = []
     sources_used: list[str] = []
     for provider_name, provider_fn in _PROVIDERS:
         try:
-            results = provider_fn(city, state, min_bedrooms, min_bathrooms)
+            results = provider_fn(
+                city, state, min_bedrooms, min_bathrooms,
+                api_key_override=user_keys.get(provider_name),
+            )
         except Exception as e:
             print(f"   ⚠️  Provider '{provider_name}' failed: {e}")
             continue

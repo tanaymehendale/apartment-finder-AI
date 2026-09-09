@@ -2,14 +2,13 @@ import { auth } from "@/lib/firebase";
 
 const BASE = "/api";
 
-// Single-owner Firebase Auth (replaces Phase 3.9's ACCESS_KEY gate). Every
-// backend URL built here (and the couple built outside this file — MapView's
-// /api/directions) forwards the signed-in user's Firebase ID token as an
-// `Authorization: Bearer` header so the backend's own gate (api/server.py's
-// auth_gate) lets it through. `getIdToken()` auto-refreshes an expired token
-// transparently. Empty object (no header) when signed out or auth is disabled
-// (`auth` is null — matches the backend's no-op-when-OWNER_EMAIL-unset
-// convention for local dev).
+// Open Firebase Auth (Phase 5). Every backend URL built here (and the couple
+// built outside this file — MapView's /api/directions) forwards the signed-in
+// user's Firebase ID token as an `Authorization: Bearer` header so the
+// backend's own gate (api/server.py's auth_gate) lets it through.
+// `getIdToken()` auto-refreshes an expired token transparently. Empty object
+// (no header) when signed out or auth is disabled (`auth` is null — matches
+// the backend's no-op-when-FIREBASE_PROJECT_ID-unset convention for local dev).
 export async function authHeaders(): Promise<Record<string, string>> {
   const token = await auth?.currentUser?.getIdToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -118,7 +117,7 @@ export function chatStream(
               : res.status === 401
                 ? "Not authorized. Please sign in again."
                 : res.status === 403
-                  ? "Signed in as a different account than this app's owner."
+                  ? "Your email isn't verified yet. Check your inbox for the verification link."
                   : `Backend returned ${res.status}. ${detail.slice(0, 200)}`.trim();
           const encoder = new TextEncoder();
           streamController.enqueue(
@@ -153,4 +152,61 @@ export function chatStream(
       controller.abort();
     },
   });
+}
+
+// ─── Onboarding / BYOK (Phase 5) ──────────────────────────────────────────
+// Two free full-pipeline searches on the app's own keys; after that, add your
+// own OpenAI + a listing-provider (RentCast or Apify) key here to keep going —
+// every search after that uses only your own keys. Gemini and Google Maps
+// stay app-managed always (see CLAUDE.md's Onboarding / BYOK section).
+
+export type ByokProvider = "openai" | "rentcast" | "apify";
+
+export interface ProfileSummary {
+  email: string | null;
+  run_count: number;
+  free_runs_remaining: number;
+  byok_active: boolean;
+  keys_set: Record<ByokProvider, boolean>;
+}
+
+export async function getProfile(): Promise<ProfileSummary> {
+  const res = await fetch(`${BASE}/profile`, { headers: await authHeaders() });
+  if (!res.ok) throw new Error("Failed to load profile");
+  return res.json();
+}
+
+export async function saveApiKey(provider: ByokProvider, value: string): Promise<ProfileSummary> {
+  const res = await fetch(`${BASE}/profile/keys`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ provider, value }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || "Failed to save key");
+  }
+  return res.json();
+}
+
+export async function deleteApiKey(provider: ByokProvider): Promise<ProfileSummary> {
+  const res = await fetch(`${BASE}/profile/keys/${provider}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to remove key");
+  return res.json();
+}
+
+export async function testApiKey(
+  provider: ByokProvider,
+  value: string,
+): Promise<{ valid: boolean; message: string }> {
+  const res = await fetch(`${BASE}/profile/keys/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ provider, value }),
+  });
+  if (!res.ok) return { valid: false, message: "Couldn't reach the server to test this key." };
+  return res.json();
 }

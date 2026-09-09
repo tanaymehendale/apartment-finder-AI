@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ConversationSidebar } from "@/components/sidebar/ConversationSidebar";
@@ -14,6 +15,7 @@ const ResultsPanel = dynamic(
 type Phase = "landing" | "chatting" | "results";
 
 export function AppShell() {
+  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Desktop-primary, but the sidebar shouldn't eat half a phone screen —
@@ -29,6 +31,7 @@ export function AppShell() {
     agentStatus,
     apartments,
     isStreaming,
+    quotaExhausted,
     landmark,
     roommates,
     sendMessage,
@@ -70,15 +73,34 @@ export function AppShell() {
         currentSessionId={sessionId}
       />
 
-      {/* Main content area — side-by-side on md+ once results exist; stacked
-          (chat on top, results below) on narrow viewports instead of forcing
-          a min-width that would push results off-screen. */}
-      <div
-        className={[
-          "flex flex-1 overflow-hidden min-w-0",
-          phase === "results" ? "flex-col md:flex-row" : "flex-row",
-        ].join(" ")}
-      >
+      <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+        {/* Phase 5 (BYOK): free trial used up and this account has no keys of
+            its own yet. Persistent (not a one-off bubble) since it recurs on
+            every message until the user visits /settings. */}
+        {quotaExhausted && (
+          <div className="flex-shrink-0 flex items-center justify-between gap-3 bg-warning-50 border-b border-warning-100 px-4 py-2 text-sm">
+            <span className="text-warning-700">
+              You&apos;ve used your 2 free searches. Add your own API keys to keep going.
+            </span>
+            <button
+              type="button"
+              onClick={() => router.push("/settings")}
+              className="flex-shrink-0 rounded-lg bg-warning-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-warning-700 transition-colors"
+            >
+              Add API keys
+            </button>
+          </div>
+        )}
+
+        {/* Main content area — side-by-side on md+ once results exist; stacked
+            (chat on top, results below) on narrow viewports instead of forcing
+            a min-width that would push results off-screen. */}
+        <div
+          className={[
+            "flex flex-1 overflow-hidden min-w-0",
+            phase === "results" ? "flex-col md:flex-row" : "flex-row",
+          ].join(" ")}
+        >
         {/* Chat column — full width in landing/chatting, 1/3 (md+) in results */}
         <div
           className={[
@@ -116,6 +138,7 @@ export function AppShell() {
               isLoading={apartments.length === 0 && pipelineRunning}
             />
           )}
+        </div>
         </div>
       </div>
     </div>

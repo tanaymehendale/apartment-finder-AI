@@ -19,10 +19,18 @@ const SESSION_LOST_RE = /session not found/i;
 // SSE error event. Matched explicitly (not just relying on it happening not to
 // match SESSION_LOST_RE) so the session-recovery replay below never fires for an
 // auth failure — replaying with a fresh session wouldn't help; the token itself
-// is bad or the account isn't the owner.
-const UNAUTHORIZED_RE = /^(not authorized|signed in as a different account)/i;
+// is bad or the account isn't verified yet.
+const UNAUTHORIZED_RE = /^(not authorized|your email isn't verified)/i;
 
-type TurnOutcome = "ok" | "session-lost" | "unauthorized" | "aborted";
+// Phase 5 (BYOK): the free-trial limit is exhausted and this user hasn't set
+// their own OpenAI + listing-provider keys yet (api/session_manager.py's
+// pre-run quota gate, before the pipeline is ever invoked). Suppressed from
+// the chat transcript (like a lost session) — the UI shows a persistent CTA to
+// /settings instead of a one-off bubble, since it recurs on every message
+// until the user adds keys.
+const QUOTA_EXHAUSTED_RE = /^byok_required/i;
+
+type TurnOutcome = "ok" | "session-lost" | "unauthorized" | "quota-exhausted" | "aborted";
 
 const CACHE_PREFIXES = ["apt_messages_", "apt_apartments_", "apt_landmark_", "apt_roommates_"];
 
@@ -75,6 +83,11 @@ export function useChat() {
   const [agentStatus, setAgentStatus] = useState<AgentStatusEvent | null>(null);
   const [apartments, setApartments] = useState<Apartment[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Phase 5 (BYOK): true once the backend has told us the free trial is used up
+  // and this account has no keys of its own yet. Drives a persistent "add your
+  // API keys" CTA (see AppShell) rather than a one-off chat bubble, since it
+  // recurs on every message until the user visits /settings.
+  const [quotaExhausted, setQuotaExhausted] = useState(false);
   const [landmark, setLandmark] = useState<LandmarkInfo | null>(null);
   // P2-3: number of additional roommates (0 = living solo). Drives the per-person
   // rent split shown on each card.
@@ -195,6 +208,7 @@ export function useChat() {
     setMessages((prev) => [...prev, userMsg]);
     setIsStreaming(true);
     setAgentStatus(null);
+    setQuotaExhausted(false);
 
     const assistantMsgId = uid();
     setMessages((prev) => [
@@ -222,6 +236,7 @@ export function useChat() {
       let receivedContent = false;
       let sessionLost = false;
       let unauthorized = false;
+      let quotaExhausted = false;
       let currentBubbleId = assistantMsgId;
       let currentBubbleAuthor: string | null = null;
       let currentRaw = ""; // unstripped accumulator for the current bubble (to hide the RANKING marker)
@@ -286,6 +301,10 @@ export function useChat() {
                 sessionLost = true;
                 continue;
               }
+              if (QUOTA_EXHAUSTED_RE.test(event.content ?? "")) {
+                quotaExhausted = true;
+                continue;
+              }
               if (UNAUTHORIZED_RE.test(event.content ?? "")) {
                 unauthorized = true;
               }
@@ -348,6 +367,7 @@ export function useChat() {
 
       if (abortController.signal.aborted) return "aborted";
       if (sessionLost) return "session-lost";
+      if (quotaExhausted) return "quota-exhausted";
       if (unauthorized) return "unauthorized";
       if (!receivedContent) {
         setMessages((prev) =>
@@ -394,6 +414,11 @@ export function useChat() {
         paint(
           "⚠️ Your previous session expired and I couldn't start a new one. Please reload and try again."
         );
+      } else if (outcome === "quota-exhausted") {
+        // No bubble — drop the empty placeholder and let the persistent
+        // /settings CTA (driven by `quotaExhausted` below) carry the message.
+        setMessages((prev) => prev.filter((m) => m.id !== assistantMsgId));
+        setQuotaExhausted(true);
       }
     } finally {
       setIsStreaming(false);
@@ -411,6 +436,7 @@ export function useChat() {
     setIsStreaming(false);
     setLandmark(null);
     setRoommates(0);
+    setQuotaExhausted(false);
   }, []);
 
   const restoreSession = useCallback((sessionId: string) => {
@@ -467,6 +493,7 @@ export function useChat() {
 
     setAgentStatus(null);
     setIsStreaming(false);
+    setQuotaExhausted(false);
   }, []);
 
   return {
@@ -474,6 +501,7 @@ export function useChat() {
     agentStatus,
     apartments,
     isStreaming,
+    quotaExhausted,
     landmark,
     roommates,
     sendMessage,

@@ -21,7 +21,7 @@ from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
 from api import session_manager
-from apartment_finder import tools, tracing
+from apartment_finder import tools, tracing, user_profiles
 from apartment_finder.tools import _get_gmaps_client
 
 
@@ -36,21 +36,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ApartmentFinder API", lifespan=lifespan)
 
-# Phase 5 (partial) — single-owner Firebase Auth gate, replacing Phase 3.9's
-# shared-secret ACCESS_KEY. Every route except /api/health and /api/photo
-# requires a Firebase ID token (`Authorization: Bearer <token>`, minted
-# client-side by frontend/lib/firebase.ts) whose decoded, verified email
-# matches OWNER_EMAIL exactly — this is still single-owner access, not open
-# registration; per-user API keys are a separate, deferred piece. /api/photo is
-# exempted too: it's loaded via a plain <img src> tag, which can't carry a
-# bearer header, and it only ever serves a public Street View image for
-# coordinates already visible in the authenticated UI — low sensitivity, same
-# narrow-exemption shape as /api/health. No-op when OWNER_EMAIL isn't set
-# (local dev needs no config), same convention as tracing.init()/the old
-# ACCESS_KEY. Registered BEFORE CORSMiddleware below so CORS stays the
-# outermost middleware and answers preflight OPTIONS requests itself — this
-# gate never sees them.
-_OWNER_EMAIL = os.getenv("OWNER_EMAIL")
+# Phase 5 — open Firebase Auth gate. Every route except /api/health and
+# /api/photo requires a Firebase ID token (`Authorization: Bearer <token>`,
+# minted client-side by frontend/lib/firebase.ts) with a verified email — ANY
+# verified account is accepted (no longer restricted to a single OWNER_EMAIL;
+# real multi-user onboarding replaced the old single-owner gate). The verified
+# claims are attached to `request.state.user` so route handlers know who's
+# calling — used by session creation (to build a per-user agent tree / resolve
+# BYOK keys) and the new /api/profile endpoints. /api/photo is exempted too:
+# it's loaded via a plain <img src> tag, which can't carry a bearer header, and
+# it only ever serves a public Street View image for coordinates already
+# visible in the authenticated UI — low sensitivity, same narrow-exemption
+# shape as /api/health. No-op when FIREBASE_PROJECT_ID isn't set (local dev
+# needs no config), same convention as tracing.init(). Registered BEFORE
+# CORSMiddleware below so CORS stays the outermost middleware and answers
+# preflight OPTIONS requests itself — this gate never sees them.
 _FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
 _AUTH_EXEMPT_PATHS = {"/api/health", "/api/photo"}
 # Module-level so the fetched Google public-cert cache persists across requests
@@ -60,7 +60,8 @@ _google_auth_request = google_requests.Request()
 
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
-    if _OWNER_EMAIL and request.url.path not in _AUTH_EXEMPT_PATHS:
+    request.state.user = None
+    if _FIREBASE_PROJECT_ID and request.url.path not in _AUTH_EXEMPT_PATHS:
         authz = request.headers.get("authorization", "")
         token = authz[7:].strip() if authz.lower().startswith("bearer ") else ""
         if not token:
@@ -78,16 +79,10 @@ async def auth_gate(request: Request, call_next):
         except Exception:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         email = (claims.get("email") or "").lower()
-        if email != _OWNER_EMAIL.lower() or not claims.get("email_verified"):
-            # Server-side-only "waitlist" signal — never surfaced to the caller
-            # (the frontend already shows a friendly waitlist screen without
-            # ever reaching the backend for the common case). This catches the
-            # rarer path of someone hitting the API directly. Every account
-            # creation itself (the more complete signal — this print only fires
-            # if they also try an API call) is already visible with zero extra
-            # code in the Firebase Console's Authentication -> Users tab.
-            print(f"[auth_gate] non-owner rejected: {email or '(no email)'}")
+        if not email or not claims.get("email_verified"):
+            print(f"[auth_gate] unverified account rejected: {email or '(no email)'}")
             return JSONResponse({"detail": "Forbidden"}, status_code=403)
+        request.state.user = {"uid": claims.get("user_id") or claims.get("sub"), "email": email}
     return await call_next(request)
 
 
@@ -121,8 +116,12 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/sessions")
-async def create_session():
-    session_id = await session_manager.create_session()
+async def create_session(request: Request):
+    user = request.state.user
+    session_id = await session_manager.create_session(
+        uid=user["uid"] if user else None,
+        email=user["email"] if user else None,
+    )
     return {"session_id": session_id}
 
 
@@ -158,6 +157,96 @@ async def get_state(session_id: str):
     if not state:
         raise HTTPException(status_code=404, detail="Session not found or empty state")
     return state
+
+
+def _require_user(request: Request) -> dict:
+    """Profile endpoints only make sense for an authenticated user — 401 when
+    auth isn't configured at all (local dev) or the caller isn't signed in."""
+    user = request.state.user
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return user
+
+
+class ApiKeyRequest(BaseModel):
+    provider: str  # "openai" | "rentcast" | "apify"
+    value: str
+
+
+@app.get("/api/profile")
+async def get_profile(request: Request):
+    user = _require_user(request)
+    return await asyncio.to_thread(user_profiles.get_profile_summary, user["uid"])
+
+
+@app.post("/api/profile/keys")
+async def save_profile_key(request: Request, body: ApiKeyRequest):
+    user = _require_user(request)
+    if body.provider not in ("openai", "rentcast", "apify"):
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    if not body.value.strip():
+        raise HTTPException(status_code=400, detail="Key value is required")
+    try:
+        await asyncio.to_thread(
+            user_profiles.save_api_key, user["uid"], user["email"], body.provider, body.value.strip()
+        )
+    except RuntimeError as e:
+        # PROFILE_ENCRYPTION_KEY not configured on this deploy.
+        raise HTTPException(status_code=503, detail=str(e))
+    return await asyncio.to_thread(user_profiles.get_profile_summary, user["uid"])
+
+
+@app.delete("/api/profile/keys/{provider}")
+async def delete_profile_key(request: Request, provider: str):
+    user = _require_user(request)
+    if provider not in ("openai", "rentcast", "apify"):
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    await asyncio.to_thread(user_profiles.clear_api_key, user["uid"], provider)
+    return await asyncio.to_thread(user_profiles.get_profile_summary, user["uid"])
+
+
+@app.post("/api/profile/keys/test")
+async def test_profile_key(request: Request, body: ApiKeyRequest):
+    """Cheap live validation of a key before it's saved, so a typo surfaces
+    immediately instead of mid-search. RentCast has no free "whoami" endpoint,
+    so its test spends one of the user's own RentCast calls — noted in the
+    response message."""
+    _require_user(request)
+    value = body.value.strip()
+    if not value:
+        return {"valid": False, "message": "Key is required."}
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            if body.provider == "openai":
+                resp = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {value}"},
+                )
+                valid = resp.status_code == 200
+                message = "Key is valid." if valid else "OpenAI rejected this key."
+            elif body.provider == "apify":
+                resp = await client.get(
+                    "https://api.apify.com/v2/users/me", params={"token": value}
+                )
+                valid = resp.status_code == 200
+                message = "Key is valid." if valid else "Apify rejected this key."
+            elif body.provider == "rentcast":
+                resp = await client.get(
+                    "https://api.rentcast.io/v1/listings/rental/long-term",
+                    headers={"X-Api-Key": value},
+                    params={"city": "Austin", "state": "TX", "limit": 1},
+                )
+                valid = resp.status_code == 200
+                message = (
+                    "Key is valid (this test used one of your RentCast calls)."
+                    if valid else "RentCast rejected this key."
+                )
+            else:
+                raise HTTPException(status_code=400, detail="Unknown provider")
+        except httpx.HTTPError:
+            valid, message = False, "Couldn't reach the provider to validate this key."
+    return {"valid": valid, "message": message}
 
 
 @app.get("/api/directions")
@@ -225,7 +314,7 @@ async def get_photo(
 
 @app.get("/api/health")
 async def health():
-    missing = [k for k in ["GOOGLE_API_KEY", "GOOGLE_MAPS_API_KEY"] if not os.getenv(k)]
+    missing = [k for k in ["GOOGLE_API_KEY", "GOOGLE_MAPS_API_KEY", "OPENAI_API_KEY"] if not os.getenv(k)]
     # P1-1: no offline CSV fallback — at least one listing provider key is required.
     provider = (
         "rentcast" if os.getenv("RENTCAST_API_KEY")

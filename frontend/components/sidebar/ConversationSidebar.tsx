@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth, firebaseEnabled } from "@/lib/firebase";
 import type { ConversationSession } from "@/lib/types";
@@ -22,6 +23,7 @@ export function ConversationSidebar({
   onNewSearch,
   currentSessionId,
 }: Props) {
+  const router = useRouter();
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
@@ -191,15 +193,23 @@ export function ConversationSidebar({
           {/* Account — only rendered once Firebase Auth is actually configured
               (see lib/firebase.ts's no-op-when-unset convention) */}
           {firebaseEnabled && userEmail && (
-            <div className="px-3 py-3 border-t border-white/10 flex-shrink-0 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-neutral-500 truncate" title={userEmail}>
-                {userEmail}
-              </span>
+            <div className="px-3 py-3 border-t border-white/10 flex-shrink-0 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-neutral-500 truncate" title={userEmail}>
+                  {userEmail}
+                </span>
+                <button
+                  onClick={() => auth && signOut(auth)}
+                  className="flex-shrink-0 text-xs text-neutral-400 hover:text-white transition-colors"
+                >
+                  Sign out
+                </button>
+              </div>
               <button
-                onClick={() => auth && signOut(auth)}
-                className="flex-shrink-0 text-xs text-neutral-400 hover:text-white transition-colors"
+                onClick={() => router.push("/settings")}
+                className="w-full text-left text-xs text-neutral-400 hover:text-white transition-colors"
               >
-                Sign out
+                Settings & API keys
               </button>
             </div>
           )}

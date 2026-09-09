@@ -6,16 +6,17 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   type AuthError,
 } from "firebase/auth";
 import { auth, firebaseEnabled } from "@/lib/firebase";
 
-// Single-owner login (replaces Phase 3.9's /gate shared-password page).
-// Sign-up is intentionally open — anyone can create a Firebase account here,
-// but that grants nothing: api/server.py's auth_gate only ever accepts
-// OWNER_EMAIL, so a non-owner account (Google or email/password, new or
-// existing) just lands on AuthGate's waitlist screen. See CLAUDE.md for the
-// OWNER_EMAIL / NEXT_PUBLIC_FIREBASE_* setup this depends on.
+// Open sign-up (Phase 5 — replaced the earlier single-owner login). Any
+// verified account can use the app: 2 free searches, then your own OpenAI +
+// RentCast/Apify keys in Settings. Google sign-in is verified automatically;
+// email/password accounts need to click the verification link we email them
+// (api/server.py's auth_gate requires email_verified) before AuthGate lets
+// them into the app.
 const ERROR_MESSAGES: Record<string, string> = {
   "auth/wrong-password": "Wrong password.",
   "auth/user-not-found": "No account with that email.",
@@ -40,6 +41,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [verifyEmailSentTo, setVerifyEmailSentTo] = useState("");
 
   async function handleGoogle() {
     if (!auth) return;
@@ -62,16 +64,43 @@ export default function LoginPage() {
     setError("");
     try {
       if (mode === "signup") {
-        await createUserWithEmailAndPassword(auth, email, password);
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        await sendEmailVerification(cred.user);
+        // Don't redirect yet — the backend requires email_verified, so this
+        // account can't do anything useful until they click the link.
+        setVerifyEmailSentTo(email);
       } else {
         await signInWithEmailAndPassword(auth, email, password);
+        router.replace("/");
       }
-      router.replace("/");
     } catch (err) {
       setError(messageFor(err));
     } finally {
       setLoading(false);
     }
+  }
+
+  if (verifyEmailSentTo) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="w-full max-w-sm space-y-3 text-center">
+          <p className="text-sm text-gray-700">Check your email</p>
+          <p className="text-xs text-gray-500">
+            We sent a verification link to {verifyEmailSentTo}. Click it, then come back and sign in.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setVerifyEmailSentTo("");
+              setMode("signin");
+            }}
+            className="w-full rounded bg-gray-900 px-3 py-2 text-sm text-white"
+          >
+            Back to sign in
+          </button>
+        </div>
+      </main>
+    );
   }
 
   if (!firebaseEnabled) {
@@ -89,8 +118,8 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center p-6">
       <div className="w-full max-w-sm space-y-4">
         <p className="text-sm text-gray-600">
-          Shh 🤫 — this one&apos;s still in beta. You&apos;re only getting in if you&apos;re{" "}
-          <em>the</em> developer.
+          Sign in to get 2 free searches — after that, add your own OpenAI + RentCast/Apify keys
+          in Settings to keep going.
         </p>
 
         <button

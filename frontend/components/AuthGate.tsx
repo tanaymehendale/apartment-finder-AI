@@ -1,19 +1,16 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { onAuthStateChanged, signOut, type User } from "firebase/auth";
+import { onAuthStateChanged, type User } from "firebase/auth";
 import { auth, firebaseEnabled } from "@/lib/firebase";
-
-const OWNER_EMAIL = process.env.NEXT_PUBLIC_OWNER_EMAIL?.toLowerCase();
 
 type Status = "checking" | "in" | "out";
 
-// Single-owner Firebase Auth gate (replaces Phase 3.9's ACCESS_KEY gate). This
-// is UX only — redirects a logged-out visitor to /login so they don't see the
-// app shell first. The actual access boundary is api/server.py's auth_gate,
-// which verifies the Firebase ID token server-side on every request; a
-// determined visitor bypassing this component entirely still can't reach the
-// backend without a token from the allowlisted owner's account.
+// Open Firebase Auth gate (Phase 5 — replaced the earlier single-owner
+// allowlist). This is UX only — redirects a logged-out visitor to /login so
+// they don't see the app shell first. The actual access boundary is
+// api/server.py's auth_gate, which verifies the Firebase ID token server-side
+// on every request and requires a verified email (any account, not just one).
 export function AuthGate({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -36,7 +33,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, [status, pathname, router]);
 
   // No Firebase project configured — plain local dev needs zero auth setup,
-  // same no-op convention as the backend's unset OWNER_EMAIL.
+  // same no-op convention as the backend's unset FIREBASE_PROJECT_ID.
   if (!firebaseEnabled) return <>{children}</>;
 
   // /login must always render its own content, regardless of auth state, or a
@@ -53,25 +50,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (OWNER_EMAIL && user?.email?.toLowerCase() !== OWNER_EMAIL) {
-    // Anyone can sign in/sign up here (see app/login/page.tsx) — it grants
-    // nothing, since api/server.py's auth_gate only ever accepts OWNER_EMAIL.
-    // This screen is just the friendly face on that rejection.
+  if (user && !user.emailVerified) {
+    // The backend's auth_gate requires email_verified — an unverified
+    // email/password signup would otherwise hit a confusing 403 on first API
+    // call. Google sign-in accounts are always already verified.
     return (
       <FullScreenMessage>
-        <p className="text-2xl">🎉</p>
-        <p className="text-sm text-gray-700">You&apos;re on the list!</p>
+        <p className="text-sm text-gray-700">Verify your email to continue</p>
         <p className="max-w-xs text-xs text-gray-500">
-          ApartmentFinder AI isn&apos;t public yet — this will go live soon, and you&apos;ve been
-          added to the waitlist.
+          We sent a verification link to {user.email}. Once you&apos;ve verified, refresh this page.
         </p>
-        <button
-          type="button"
-          onClick={() => auth && signOut(auth)}
-          className="mt-1 rounded bg-gray-900 px-3 py-2 text-sm text-white"
-        >
-          Try a different account
-        </button>
       </FullScreenMessage>
     );
   }

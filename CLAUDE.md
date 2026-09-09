@@ -27,7 +27,14 @@ python test_mcp.py             # Validates Google Maps MCP connectivity (legacy;
 ## Environment Variables
 
 `.env` requires:
-- `GOOGLE_API_KEY` — Gemini API key (required)
+- `GOOGLE_API_KEY` — Gemini API key (required). Used ONLY by the Reviewer's Gemini model
+  (`google_search` grounding needs a native Gemini model). Always app-managed — the tiered
+  BYOK decision (see the Onboarding / BYOK section below) deliberately keeps this off the
+  user-supplied key list.
+- `OPENAI_API_KEY` — OpenAI key (required). Backs `LiteLlm(model="openai/gpt-4o-mini")`, used by
+  Manager/Analyst/Summarizer (3 of the 4 agents). Previously undocumented here despite being
+  required in practice (visible in the `gcloud run deploy --set-secrets` example below) — this is
+  the key a BYOK user supplies to keep searching past the free trial (see below).
 - `GOOGLE_MAPS_API_KEY` — Google Maps key (required). Needs Distance Matrix, Directions,
   Geocoding, and **Places API (New)** enabled. Places (New) is used for landmark resolution
   (`store_requirements`), category proximity search (`places:searchText`), and **transit
@@ -48,27 +55,31 @@ python test_mcp.py             # Validates Google Maps MCP connectivity (legacy;
   [Langfuse](https://langfuse.com) tracing at import time (via `GoogleADKInstrumentor` — see
   Observability section below). Omitting them is a clean no-op; nothing else in the app depends on
   these vars. `/api/health` reports `tracing_enabled` so you can confirm at a glance.
-- `OWNER_EMAIL` — optional (Phase 5, partial — replaces Phase 3.9's throwaway `ACCESS_KEY` gate).
-  Single-owner Firebase Auth: when set, `api/server.py`'s `auth_gate` middleware rejects every
-  route except `/api/health` unless the request carries `Authorization: Bearer <Firebase ID
-  token>` whose decoded, verified email matches this value exactly (case-insensitive) **and**
-  `email_verified` is true. Still single-owner access, not open registration — per-user API keys
-  are a separate, deferred piece (see Phase 5 in the backlog). Unset (the local-dev default) is a
+- `FIREBASE_PROJECT_ID` — optional; the real "is auth configured" switch (Phase 5). When set,
+  `api/server.py`'s `auth_gate` middleware rejects every route except `/api/health`/`/api/photo`
+  unless the request carries `Authorization: Bearer <Firebase ID token>` with a **verified**
+  email — any verified account, not restricted to one address (open sign-up; see Onboarding / BYOK
+  below). Used as the JWT audience when verifying the token. Unset (the local-dev default) is a
   clean no-op — every route is open, same convention as the Langfuse vars above. Verification uses
   `google-auth`'s `google.oauth2.id_token.verify_firebase_token` (lighter than the full
   `firebase-admin` SDK — only fetches Google's public certs over HTTPS, no service-account
-  credential needed) with `audience=FIREBASE_PROJECT_ID`; run off the event loop via
-  `asyncio.to_thread` since the underlying HTTP call is synchronous.
-- `FIREBASE_PROJECT_ID` — required alongside `OWNER_EMAIL`. The Firebase/GCP project id, used as
-  the JWT audience when verifying ID tokens. Same value as `NEXT_PUBLIC_FIREBASE_PROJECT_ID` below.
+  credential needed); run off the event loop via `asyncio.to_thread` since the underlying HTTP call
+  is synchronous. On success, `auth_gate` attaches `request.state.user = {"uid", "email"}` so
+  handlers know who's calling — used to build a per-session agent tree (BYOK) and for `/api/profile`.
+- `OWNER_EMAIL` — no longer read by `auth_gate` (it used to be the single-owner allowlist; open
+  sign-up replaced it). Left unused rather than force-removed from existing deploy configs.
+- `PROFILE_ENCRYPTION_KEY` — required once `FIREBASE_PROJECT_ID` is set and any user saves a BYOK
+  key. A Fernet key (`cryptography.fernet.Fernet`) used by `apartment_finder/user_profiles.py` to
+  encrypt user-supplied API keys at rest in Firestore; decrypted only server-side, at the point of
+  use, and never returned to the frontend. Generate once:
+  `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+  Losing/rotating this key orphans every previously-saved user key (they'll need to re-enter them).
 - Frontend (`NEXT_PUBLIC_*`, build-time inlined like `NEXT_PUBLIC_BACKEND_URL` — see Deployment):
   `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`,
   `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID` — the Firebase Web app config
   from Firebase Console → Project Settings → Your apps (not secret; Firebase's own docs treat this
   as safe to ship client-side, since the real access boundary is the backend's token verification,
-  not hiding this config). `NEXT_PUBLIC_OWNER_EMAIL` — same value as the backend's `OWNER_EMAIL`,
-  used only for a fast client-side "wrong account" message in `AuthGate`; the backend check is
-  always authoritative. `NEXT_PUBLIC_MAPBOX_TOKEN` (Phase 4, P4-1) — a Mapbox public token (from
+  not hiding this config). `NEXT_PUBLIC_MAPBOX_TOKEN` (Phase 4, P4-1) — a Mapbox public token (from
   mapbox.com → account → Tokens; the default public token needs no extra scopes) used only by
   `frontend/components/map/MapView.tsx` to render the map (`react-map-gl` + `mapbox-gl`). Google
   Maps stays the data brain — geocoding, Distance Matrix, and `/api/directions` are unchanged;
@@ -78,12 +89,13 @@ python test_mcp.py             # Validates Google Maps MCP connectivity (legacy;
     when `NEXT_PUBLIC_FIREBASE_API_KEY` is unset — local dev needs zero Firebase setup).
   - `frontend/components/AuthGate.tsx` wraps the whole app (`app/layout.tsx`) and redirects a
     logged-out visitor to `/login` — UX only, not the enforcement boundary; a visitor could bypass
-    this component entirely and still couldn't reach the backend without a token from the owner's
-    account. It also shows a distinct "restricted to its owner" screen (with sign-out) for a
-    signed-in *non*-owner account, rather than bouncing them back through the login page.
-  - `frontend/app/login/page.tsx` — Google sign-in + email/password, no public sign-up UI (the
-    owner provisions their own account once via Firebase Console, or auto-provisions on first
-    Google sign-in).
+    this component entirely and still couldn't reach the backend without a verified account's
+    token. Open sign-up (Phase 5) — any verified account gets in, so the only other state it shows
+    is "verify your email" for a signed-in-but-unverified account (email/password sign-ups only;
+    Google accounts are always pre-verified).
+  - `frontend/app/login/page.tsx` — Google sign-in + email/password, open sign-up. An email/password
+    signup calls `sendEmailVerification` and shows a "check your email" screen instead of
+    redirecting straight in, since the backend requires `email_verified`.
   - `frontend/lib/api.ts`'s `authHeaders()` reads the current user's ID token
     (`getIdToken()` — auto-refreshes transparently) and returns it as an `Authorization: Bearer`
     header, merged into every backend call (including the two built outside `lib/api.ts` —
@@ -92,7 +104,7 @@ python test_mcp.py             # Validates Google Maps MCP connectivity (legacy;
     failure for a lost session and retries pointlessly.
   - This whole layer (`frontend/lib/firebase.ts`, `frontend/components/AuthGate.tsx`,
     `frontend/app/login/`, the `authHeaders()` plumbing, `auth_gate` in `api/server.py`) is what
-    Phase 5's future multi-user/BYO-API-key work would build on top of, not replace outright.
+    the Onboarding / BYOK system below builds on top of.
 
 **There is no offline CSV fallback.** At least one listing provider (`RENTCAST_API_KEY` or
 `APIFY_API_KEY`) must be set; otherwise `/api/health` reports `degraded` and searches return
@@ -136,6 +148,17 @@ System prompts for all four agents live in [apartment_finder/instructions.py](ap
 ### Session Management (`main.py`)
 
 `InMemoryRunner` is initialized with `app_name="apartment_finder"`. A session is explicitly created via `runner.session_service.create_session(...)` before the loop; `session.id` is passed to every `run_debug` call to ensure all turns share the same session state.
+
+### Onboarding / BYOK (Phase 5)
+
+Open sign-up (any verified Firebase account), 2 free full-pipeline searches on the app's own keys, then a **tiered** bring-your-own-key requirement: the user must supply their own **OpenAI** key and at least one **listing-provider** key (RentCast and/or Apify) to keep going. **Gemini and Google Maps stay app-managed permanently** — they're already globally quota-capped (50/mo RentCast-style, 200/mo Places) and cheap on free tier, and Google Maps specifically needs a GCP project + 4 enabled APIs + a billing account, which is exactly the setup friction this tier avoids pushing onto users. Once a user's own key is set for a given provider, it's used **exclusively** for that provider on every subsequent search — never falls back to the app's key.
+
+- **`apartment_finder/user_profiles.py`** — Firestore-backed per-user profile store (collection `user_profiles`, doc id = Firebase `uid`), mirroring `tools.py`'s usage-counter Firestore pattern (reuses `tools._get_firestore_client()`). Tracks `run_count` (free-trial counter, cap `_FREE_RUN_LIMIT = 2`) and `api_keys` (`openai`/`rentcast`/`apify`, encrypted at rest via `cryptography.fernet.Fernet` keyed by `PROFILE_ENCRYPTION_KEY`). `can_run(uid)` is the single gate: allowed if under the free-run cap OR `is_byok_active(uid)` (OpenAI key set AND a listing-provider key set). Firestore-only, no file-backed fallback — this system only matters once `FIREBASE_PROJECT_ID` is configured (a real deployed multi-user context), so plain local dev never touches it.
+- **Per-session agent tree** (`apartment_finder/agent.py`'s `build_agent_tree(openai_api_key=None)`) — every `LlmAgent`/`SequentialAgent` node (Analyst, Reviewer, Summarizer, ResearchTeam, Manager) is built fresh per call, because ADK's `BaseAgent.__set_parent_agent_for_sub_agents` raises if a sub-agent's `parent_agent` is already set — an agent node can only ever belong to one tree. `gemini_model` (the Reviewer's model, always app-managed) stays a module-level singleton since it's a model backend, not a tree node. A module-level `root_agent = build_agent_tree()` still exists (built with the app's own key) purely for `adk web`/`main.py`, which have no per-user concept; the FastAPI server never uses it — `api/session_manager.py`'s `create_session(uid, email)` calls `build_agent_tree(openai_api_key=...)` fresh per session, resolving the user's own key (if BYOK-active) or `None` (app key, same as today).
+- **RentCast/Apify per-user keys** — threaded through the existing `tool_context` seam rather than rebuilding the tool layer: `session_manager.create_session` seeds ADK session state with `{"_user_uid": uid}` only (**never a raw key** — session state is what Langfuse traces, see Observability above). `tools.fetch_apartments` reads `_user_uid` from `tool_context.state`, resolves the user's decrypted RentCast/Apify keys via `user_profiles.get_decrypted_key`, and passes them as `api_key_override` into `_fetch_rentcast`/`_fetch_apify` — which skip the app-wide monthly usage counter entirely when an override is present (that quota is the app's shared pool, not the BYOK user's own). This is also where the free-trial run is counted (`user_profiles.increment_run_count`) — at the point a real provider call is about to happen, not at the chat-turn level, so a Manager turn that's just gathering requirements doesn't burn a free run.
+- **Quota gate** — `api/session_manager.py`'s `stream_message` calls `user_profiles.can_run(uid)` *before* invoking the ADK runner at all; if blocked, it yields a `"BYOK_REQUIRED: ..."` SSE error event and returns without spending any external API call. The frontend matches this via `QUOTA_EXHAUSTED_RE` in `frontend/hooks/useChat.ts` (same pattern as `SESSION_LOST_RE`/`UNAUTHORIZED_RE`) and suppresses it from the chat transcript in favor of a persistent banner (`frontend/components/AppShell.tsx`) linking to `/settings`, since the same block recurs on every message until the user adds keys.
+- **`api/server.py`'s `auth_gate`** attaches `request.state.user = {"uid", "email"}` on a verified token (previously the claims were verified then discarded) — this is what `POST /api/sessions` and the `/api/profile*` endpoints key off of.
+- **`frontend/app/settings/page.tsx`** — account email, free-trial status, and one input row per provider (test-before-save via `POST /api/profile/keys/test`, which does a cheap live call: OpenAI `GET /v1/models`, Apify `GET /v2/users/me`, RentCast a 1-result search since it has no free "whoami" endpoint). `/api/profile` only ever returns booleans (`keys_set`) — decrypted key values never reach the frontend.
 
 ### Observability (Langfuse, P3.5-1)
 
@@ -223,12 +246,13 @@ Vercel before building, not after.
 gcloud run deploy apartment-finder-api --source . --region us-central1 \
   --min-instances=0 --max-instances=1 --timeout=900 --memory=1Gi \
   --set-env-vars USAGE_STORE=firestore,ALLOWED_ORIGINS=https://<your-app>.vercel.app,\
-OWNER_EMAIL=<owner's email>,FIREBASE_PROJECT_ID=<firebase project id> \
+FIREBASE_PROJECT_ID=<firebase project id> \
   --set-secrets GOOGLE_API_KEY=...:latest,OPENAI_API_KEY=...:latest,GOOGLE_MAPS_API_KEY=...:latest,\
-RENTCAST_API_KEY=...:latest,APIFY_API_KEY=...:latest,LANGFUSE_PUBLIC_KEY=...:latest,LANGFUSE_SECRET_KEY=...:latest
+RENTCAST_API_KEY=...:latest,APIFY_API_KEY=...:latest,PROFILE_ENCRYPTION_KEY=...:latest,\
+LANGFUSE_PUBLIC_KEY=...:latest,LANGFUSE_SECRET_KEY=...:latest
 ```
-`OWNER_EMAIL`/`FIREBASE_PROJECT_ID` are plain env vars, not secrets (Secret Manager is for the API
-keys above) — an email address and a project id aren't sensitive on their own.
+`FIREBASE_PROJECT_ID` is a plain env var, not a secret (Secret Manager is for the API keys and
+`PROFILE_ENCRYPTION_KEY` above) — a project id isn't sensitive on its own.
 `--timeout=900` (not the 300s default): the 429-retry path can outlast 5 minutes.
 `/api/health` reports `usage_store` and `tracing_enabled` so a misconfigured deploy is visible at a
 glance rather than discovered via a surprise bill.
@@ -247,10 +271,9 @@ docker run --rm -e PORT=8080 -p 8080:8080 --env-file <(python -c \
 
 **Vercel:** root directory `frontend/`; set `BACKEND_URL` (used by `next.config.mjs` rewrites for
 the short endpoints) **and** `NEXT_PUBLIC_BACKEND_URL` (Cloud Run URL, for the direct SSE stream),
-plus the five Firebase Auth vars from the Environment Variables section above
-(`NEXT_PUBLIC_FIREBASE_API_KEY`/`AUTH_DOMAIN`/`PROJECT_ID`/`APP_ID`, `NEXT_PUBLIC_OWNER_EMAIL`) —
-all `NEXT_PUBLIC_*`, so they must be set before Vercel builds, same build-time-inlining caveat as
-`NEXT_PUBLIC_BACKEND_URL`.
+plus the four Firebase Auth vars from the Environment Variables section above
+(`NEXT_PUBLIC_FIREBASE_API_KEY`/`AUTH_DOMAIN`/`PROJECT_ID`/`APP_ID`) — all `NEXT_PUBLIC_*`, so they
+must be set before Vercel builds, same build-time-inlining caveat as `NEXT_PUBLIC_BACKEND_URL`.
 
 **Known gaps (deliberate, pre-existing):** the counters' read-modify-write can lose an update under
 concurrency (Firestore fixes torn reads, not lost updates — a real fix needs `firestore.Increment`
